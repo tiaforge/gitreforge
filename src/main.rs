@@ -101,7 +101,7 @@ fn main() {
 
         Commands::PruneEmpty => {
             prune::remove_empty_commits(repository_path, cli.dry_run).unwrap();
-        },
+        }
 
         Commands::MarkdownHelp => {
             clap_markdown::print_help_markdown::<Cli>();

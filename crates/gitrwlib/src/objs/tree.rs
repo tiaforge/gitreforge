@@ -48,10 +48,10 @@ impl Tree {
         }
     }
 
-    pub fn lines(&self) -> impl Iterator<Item = TreeLine> {
+    pub fn lines(&self) -> impl Iterator<Item = TreeLine<'_>> {
         self.lines.iter().map(|tree_line_index| TreeLine {
             hash: Cow::Borrowed(&tree_line_index.hash),
-            text: tree_line_index.text.get(&self.bytes).as_bstr(), // text: self._bytes.get(tree_line_index.text),
+            text: tree_line_index.text.get(&self.bytes).as_bstr(),
         })
     }
 

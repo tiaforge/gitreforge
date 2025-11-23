@@ -37,7 +37,7 @@ fn last_index_of(path: &[u8], needle: u8) -> Option<usize> {
 type DynFn<'a> = Box<dyn Fn(&[u8]) -> bool + Sync + Send + 'a>;
 type DynFn2<'a> = Box<dyn Fn(&[u8], &[u8]) -> bool + Sync + Send + 'a>;
 
-fn build_folder_delete_patterns(folders: &[String]) -> DynFn {
+fn build_folder_delete_patterns(folders: &[String]) -> DynFn<'_> {
     let mut delete_folder: DynFn = Box::new(|_path| false);
 
     for folder in folders.iter().map(|f| f.as_bytes()) {
@@ -79,7 +79,7 @@ fn build_folder_delete_patterns(folders: &[String]) -> DynFn {
     delete_folder
 }
 
-fn build_regex_pattern(patterns: &[String]) -> DynFn2 {
+fn build_regex_pattern(patterns: &[String]) -> DynFn2<'_> {
     if patterns.is_empty() {
         return b!(|_, _| false);
     }
@@ -91,7 +91,7 @@ fn build_regex_pattern(patterns: &[String]) -> DynFn2 {
     })
 }
 
-fn build_file_delete_patterns(files: &[String]) -> DynFn2 {
+fn build_file_delete_patterns(files: &[String]) -> DynFn2<'_> {
     let mut delete_file: DynFn2 = b!(|_path, _filename| false);
     for file in files.iter().map(|f| f.as_bytes()) {
         if file[0] == b'*' {

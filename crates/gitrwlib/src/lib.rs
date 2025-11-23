@@ -191,11 +191,7 @@ impl Repository {
     }
 
     pub fn write_rewritten_commits_file(
-        rewritten_commits: HashMap<
-            CommitHash,
-            CommitHash,
-            FxBuildHasher,
-        >,
+        rewritten_commits: HashMap<CommitHash, CommitHash, FxBuildHasher>,
         dry_run: bool,
     ) {
         if dry_run {
