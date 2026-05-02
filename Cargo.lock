@@ -212,17 +212,10 @@ dependencies = [
  "bstr",
  "clap",
  "clap-markdown",
- "flate2",
  "gitrwlib",
- "hex",
- "libdeflater",
- "memchr",
- "memmap2",
  "mimalloc",
- "once_cell",
  "rayon",
  "regex",
- "rs_sha1",
  "rustc-hash",
 ]
 
