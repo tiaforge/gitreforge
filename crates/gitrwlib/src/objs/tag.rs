@@ -75,6 +75,8 @@ impl Tag {
             return TagTargetType::Commit;
         } else if target == b"tree" {
             return TagTargetType::Tree;
+        } else if target == b"blob" {
+            return TagTargetType::Blob;
         }
 
         panic!(

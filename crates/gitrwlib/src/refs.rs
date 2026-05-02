@@ -171,6 +171,11 @@ impl GitRef {
                     Repository::write(repository.path.clone(), target_tag.into(), dry_run);
                     target_tag_hash
                 }
+                TagTargetType::Blob => {
+                    let target_tag_hash = target_tag.hash().clone();
+                    Repository::write(repository.path.clone(), target_tag.into(), dry_run);
+                    target_tag_hash
+                }
                 TagTargetType::Tag => {
                     panic!("Did not expect a tag to point to another tag");
                 }

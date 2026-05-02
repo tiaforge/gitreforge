@@ -67,6 +67,7 @@ pub enum TagTargetType {
     Tag,
     Commit,
     Tree,
+    Blob,
 }
 
 #[derive(Debug)]

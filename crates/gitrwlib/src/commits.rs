@@ -191,7 +191,7 @@ fn read_commit_from_ref(
     let mut git_object =
         read_object_from_hash(compression, repository_path, pack_reader, hash).unwrap();
     while let GitObject::Tag(tag) = &git_object {
-        if tag.target_type() == TagTargetType::Tree {
+        if tag.target_type() == TagTargetType::Tree || tag.target_type() == TagTargetType::Blob {
             break;
         }
 
