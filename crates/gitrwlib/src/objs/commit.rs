@@ -140,6 +140,7 @@ impl CommitEditable {
             author: None,
             committer: None,
             parents,
+            signature: None,
         }
     }
 
@@ -147,6 +148,7 @@ impl CommitEditable {
         self.tree.is_some()
             || self.author.is_some()
             || self.committer.is_some()
+            || self.signature.is_some()
             || self.parents.iter().any(|p| p.is_some())
     }
 
@@ -229,6 +231,17 @@ impl CommitEditable {
         self.committer = Some(committer);
     }
 
+    pub fn committer_email(&self) -> Option<&[u8]> {
+        let committer = self.committer_bytes();
+        let start = committer.iter().position(|b| *b == b'<')?;
+        let end = committer[start + 1..].iter().position(|b| *b == b'>')?;
+        Some(&committer[start + 1..start + 1 + end])
+    }
+
+    pub fn set_signature(&mut self, signature: Vec<u8>) {
+        self.signature = Some(signature);
+    }
+
     // pub fn tree_str(&self) -> &BStr {
     //     if let Some(t) = self.tree {
     //         format!("{}", t).as_bytes().as_bstr()
@@ -249,12 +262,26 @@ impl CommitEditable {
         }
     }
 
-    pub fn to_bytes(self) -> WriteBytes {
-        // let bytes = self.base.bytes();
+    pub fn unsigned_bytes(&self) -> WriteBytes {
+        self.to_bytes_inner(None, true)
+    }
 
+    pub fn to_bytes(self) -> WriteBytes {
         let has_changes = self.has_changes();
         if !has_changes {
             return self.base.bytes;
+        }
+
+        self.to_bytes_inner(self.signature.as_deref(), true)
+    }
+
+    fn to_bytes_inner(&self, signature: Option<&[u8]>, force_rewrite: bool) -> WriteBytes {
+        let has_changes = force_rewrite || self.has_changes();
+        if !has_changes {
+            return WriteBytes {
+                bytes: self.base.bytes.bytes.clone(),
+                start: self.base.bytes.start,
+            };
         }
 
         let tree: BString = //self.get_str(|c| &c.tree, |c| &c.tree_line);
@@ -271,6 +298,8 @@ impl CommitEditable {
         let committer = self.get_str(|c| &c.committer, |c| &c.committer);
         let committer_time = self.base.get_str(|c| &c.committer_time);
         let remainder = self.base.get_str(|c| &c.remainder);
+        let filtered_remainder = strip_signature_headers(remainder.as_bytes());
+        let signature_len = signature.map(folded_signature_len).unwrap_or(0);
 
         let mut result: Vec<u8> = Vec::with_capacity(
             b"tree \n".len()
@@ -285,7 +314,8 @@ impl CommitEditable {
                 + b"committer  \n".len()
                 + committer.len()
                 + author_time.len()
-                + remainder.len(),
+                + filtered_remainder.len()
+                + signature_len,
         );
 
         result.push_str(b"tree ");
@@ -310,7 +340,11 @@ impl CommitEditable {
         result.push_str(committer_time);
         result.push_str(b"\n");
 
-        result.push_str(remainder);
+        if let Some(signature) = signature {
+            push_folded_signature(&mut result, signature);
+        }
+
+        result.push_str(&filtered_remainder);
 
         debug_assert_eq!(result.capacity(), result.len());
 
@@ -318,5 +352,141 @@ impl CommitEditable {
             bytes: result.into_boxed_slice(),
             start: 0,
         }
+    }
+}
+
+fn folded_signature_len(signature: &[u8]) -> usize {
+    signature
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+        .map(|(i, line)| {
+            line.len()
+                + if i == 0 {
+                    b"gpgsig \n".len()
+                } else {
+                    b" \n".len()
+                }
+        })
+        .sum()
+}
+
+fn push_folded_signature(result: &mut Vec<u8>, signature: &[u8]) {
+    for (i, line) in signature
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
+        if i == 0 {
+            result.push_str(b"gpgsig ");
+        } else {
+            result.push_str(b" ");
+        }
+        result.push_str(line);
+        result.push_str(b"\n");
+    }
+}
+
+fn strip_signature_headers(remainder: &[u8]) -> Vec<u8> {
+    let message_start = remainder
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| index + 1)
+        .unwrap_or(0);
+
+    if message_start == 0 {
+        return remainder.to_vec();
+    }
+
+    let headers = &remainder[..message_start];
+    let message = &remainder[message_start..];
+    let mut result = Vec::with_capacity(remainder.len());
+    let mut index = 0;
+
+    while index < headers.len() {
+        let line_end = headers[index..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|offset| index + offset + 1)
+            .unwrap_or(headers.len());
+        let line = &headers[index..line_end];
+        if line == b"\n" {
+            break;
+        }
+
+        let is_signature = line.starts_with(b"gpgsig ") || line.starts_with(b"gpgsig-sha256 ");
+        let block_start = index;
+        index = line_end;
+        while index < headers.len() && headers[index] == b' ' {
+            let continuation_end = headers[index..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map(|offset| index + offset + 1)
+                .unwrap_or(headers.len());
+            index = continuation_end;
+        }
+
+        if !is_signature {
+            result.extend_from_slice(&headers[block_start..index]);
+        }
+    }
+
+    result.extend_from_slice(message);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use bstr::ByteSlice;
+
+    use super::*;
+
+    fn hash() -> CommitHash {
+        b"53dd2e51161a4eebd8baacd17383c9af35a8283e"
+            .as_bstr()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn changed_commit_drops_existing_signature_headers() {
+        let bytes = b"tree 31aa860596f003d69b896943677e9fe5ff208233\n\
+parent 5eec99927bb6058c8180e5dac871c89c7d01b0ab\n\
+author A User <a@example.com> 1688207675 +0200\n\
+committer C User <c@example.com> 1688209149 +0200\n\
+gpgsig -----BEGIN SSH SIGNATURE-----\n\
+ abc\n\
+ -----END SSH SIGNATURE-----\n\
+encoding UTF-8\n\
+\n\
+message\n";
+        let mut commit =
+            CommitEditable::create(CommitBase::create(hash(), bytes.to_vec().into(), false));
+        commit.set_author(b"Other User <other@example.com>".to_vec());
+
+        let result = commit.to_bytes();
+        let result = result.get_bytes();
+
+        assert!(!result.as_bstr().contains_str("gpgsig"));
+        assert!(result.as_bstr().contains_str("encoding UTF-8\n\nmessage\n"));
+    }
+
+    #[test]
+    fn new_signature_is_folded_before_message() {
+        let bytes = b"tree 31aa860596f003d69b896943677e9fe5ff208233\n\
+author A User <a@example.com> 1688207675 +0200\n\
+committer C User <c@example.com> 1688209149 +0200\n\
+\n\
+message\n";
+        let mut commit =
+            CommitEditable::create(CommitBase::create(hash(), bytes.to_vec().into(), false));
+        commit.set_signature(b"-----BEGIN SSH SIGNATURE-----\nabc\n-----END SSH SIGNATURE-----\n".to_vec());
+
+        let result = commit.to_bytes();
+        let result = result.get_bytes();
+
+        assert!(result.as_bstr().contains_str(
+            "gpgsig -----BEGIN SSH SIGNATURE-----\n abc\n -----END SSH SIGNATURE-----\n\nmessage\n"
+        ));
     }
 }

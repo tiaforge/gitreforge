@@ -9,6 +9,7 @@ use std::io::Write;
 mod contributors;
 mod prune;
 mod remove;
+mod signing;
 
 #[cfg(not(test))]
 #[global_allocator]
@@ -26,6 +27,10 @@ struct Cli {
     /// Do not change the repository.
     #[arg(short, long)]
     dry_run: bool,
+
+    /// Re-sign commits whose committer email matches this value. Can be specified multiple times.
+    #[arg(long)]
+    sign_committer: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -70,6 +75,8 @@ enum ContributorArgs {
 fn main() {
     let cli = Cli::parse();
     let repository_path = PathBuf::from(cli.repository.unwrap_or(String::from(".")));
+    let signing_policy =
+        signing::SigningPolicy::create(&repository_path, cli.sign_committer).unwrap();
 
     match cli.command {
         Commands::Contributor(args) => match args {
@@ -82,7 +89,7 @@ fn main() {
                 .unwrap();
             }
             ContributorArgs::Rewrite => {
-                contributors::rewrite(repository_path, cli.dry_run).unwrap();
+                contributors::rewrite(repository_path, cli.dry_run, &signing_policy).unwrap();
             }
         },
         Commands::Remove {
@@ -96,11 +103,12 @@ fn main() {
                 directory.unwrap_or_default(),
                 regex.unwrap_or_default(),
                 cli.dry_run,
+                &signing_policy,
             );
         }
 
         Commands::PruneEmpty => {
-            prune::remove_empty_commits(repository_path, cli.dry_run).unwrap();
+            prune::remove_empty_commits(repository_path, cli.dry_run, &signing_policy).unwrap();
         }
 
         Commands::MarkdownHelp => {

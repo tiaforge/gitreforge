@@ -31,3 +31,4 @@ mimalloc = { version = "0.1.34", default-features = false }
 clap = { version = "4.1.8", features = ["derive"] }
 clap-markdown = "0.1.4"
 gitrwlib = { version = "0.1.0", path = "crates/gitrwlib" }
+ssh-key = { version = "0.6.7", features = ["crypto"] }

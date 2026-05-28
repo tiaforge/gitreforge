@@ -28,6 +28,7 @@ pub struct CommitEditable {
     pub parents: Vec<Option<CommitHash>>,
     author: Option<Vec<u8>>,
     committer: Option<Vec<u8>>,
+    signature: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]

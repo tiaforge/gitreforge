@@ -3,12 +3,14 @@ use std::{
     thread::spawn,
 };
 
-use bstr::{io::BufReadExt, BString, ByteSlice};
+use bstr::{BString, ByteSlice, io::BufReadExt};
 use gitrwlib::{
-    objs::{CommitEditable, CommitHash},
     Repository, WriteObject,
+    objs::{CommitEditable, CommitHash},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+
+use crate::signing::SigningPolicy;
 
 fn split_index(line: &[u8]) -> Option<usize> {
     for (pos, c) in line.iter().enumerate() {
@@ -20,7 +22,7 @@ fn split_index(line: &[u8]) -> Option<usize> {
     None
 }
 
-fn get_mappings() -> Result<FxHashMap<Vec<u8>, Vec<u8>>, Box<dyn Error>> {
+fn get_mappings() -> Result<FxHashMap<Vec<u8>, Vec<u8>>, Box<dyn Error + Send + Sync>> {
     let mut mappings = FxHashMap::default();
 
     for line in stdin().lock().byte_lines() {
@@ -38,7 +40,11 @@ fn get_mappings() -> Result<FxHashMap<Vec<u8>, Vec<u8>>, Box<dyn Error>> {
     Ok(mappings)
 }
 
-pub fn rewrite(repository_path: PathBuf, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn rewrite(
+    repository_path: PathBuf,
+    dry_run: bool,
+    signing_policy: &SigningPolicy,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mappings = get_mappings()?;
 
     let (tx, rx) = channel();
@@ -62,6 +68,8 @@ pub fn rewrite(repository_path: PathBuf, dry_run: bool) -> Result<(), Box<dyn st
                 commit.set_parent(i, new_commit_hash.clone());
             }
         }
+
+        signing_policy.sign_if_selected(&mut commit)?;
 
         if commit.has_changes() {
             let old_hash = commit.base_hash().clone();

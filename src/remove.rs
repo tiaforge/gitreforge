@@ -6,18 +6,20 @@ use std::{
     hash::BuildHasher,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::{mpsc::channel, RwLock},
+    sync::{RwLock, mpsc::channel},
 };
 
 use bstr::ByteSlice;
 
 use gitrwlib::{
-    objs::{CommitBase, CommitEditable, CommitHash, Tree, TreeHash},
     Repository, WriteObject,
+    objs::{CommitBase, CommitEditable, CommitHash, Tree, TreeHash},
 };
 use rayon::prelude::*;
 use regex::bytes::RegexSet;
 use rustc_hash::{FxBuildHasher, FxHashMap};
+
+use crate::signing::SigningPolicy;
 
 macro_rules! b {
     ( $x:expr ) => {
@@ -251,6 +253,7 @@ pub fn remove(
     directories: Vec<String>,
     regexes: Vec<String>,
     dry_run: bool,
+    signing_policy: &SigningPolicy,
 ) {
     let mut rewritten_commits: HashMap<CommitHash, CommitHash, _> = FxHashMap::default();
     let rewritten_trees: RwLock<HashMap<TreeHash, Option<TreeHash>, _>> =
@@ -272,6 +275,7 @@ pub fn remove(
                         &rewritten_commits,
                         &rewritten_trees,
                         dry_run,
+                        signing_policy,
                     );
                     if old_hash != new_hash {
                         rewritten_commits.insert(old_hash, new_hash);
@@ -288,6 +292,7 @@ pub fn remove(
                                 &rewritten_commits,
                                 &rewritten_trees,
                                 dry_run,
+                                signing_policy,
                             );
                             if old_hash != new_hash {
                                 rewritten_commits.insert(old_hash, new_hash);
@@ -345,15 +350,10 @@ pub fn remove(
 fn update_commit(
     repo_path: &Path,
     mut commit: CommitEditable,
-    rewritten_commits: &HashMap<
-        CommitHash,
-        CommitHash,
-        FxBuildHasher,
-    >,
-    rewritten_trees: &RwLock<
-        HashMap<TreeHash, Option<TreeHash>, FxBuildHasher>,
-    >,
+    rewritten_commits: &HashMap<CommitHash, CommitHash, FxBuildHasher>,
+    rewritten_trees: &RwLock<HashMap<TreeHash, Option<TreeHash>, FxBuildHasher>>,
     dry_run: bool,
+    signing_policy: &SigningPolicy,
 ) -> (CommitHash, CommitHash) {
     let old_hash = commit.base_hash().clone();
 
@@ -362,6 +362,10 @@ fn update_commit(
     if let Some(Some(new_tree_hash)) = rewritten_trees.read().unwrap().get(&commit.tree()) {
         commit.set_tree(new_tree_hash.clone());
     }
+
+    signing_policy
+        .sign_if_selected(&mut commit)
+        .expect("failed to sign commit");
 
     if commit.has_changes() {
         let write_object: WriteObject = commit.into();
@@ -375,11 +379,7 @@ fn update_commit(
 
 fn update_parents(
     commit: &mut CommitEditable,
-    rewritten_commits: &HashMap<
-        CommitHash,
-        CommitHash,
-        FxBuildHasher,
-    >,
+    rewritten_commits: &HashMap<CommitHash, CommitHash, FxBuildHasher>,
 ) {
     for (i, parent) in commit.parents().iter().enumerate() {
         if let Some(new_parent) = rewritten_commits.get(parent) {

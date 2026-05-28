@@ -3,16 +3,18 @@ use std::{
     error::Error,
     hash::BuildHasher,
     path::PathBuf,
-    sync::mpsc::{channel, Sender},
+    sync::mpsc::{Sender, channel},
     thread,
 };
 
 use rustc_hash::FxHashMap;
 
 use gitrwlib::{
-    objs::{CommitEditable, CommitHash, TreeHash},
     Repository, WriteObject,
+    objs::{CommitEditable, CommitHash, TreeHash},
 };
+
+use crate::signing::SigningPolicy;
 
 fn get_parent_if_empty_commit<T: BuildHasher>(
     commit: &CommitEditable,
@@ -39,6 +41,7 @@ fn get_parent_if_empty_commit<T: BuildHasher>(
 fn find_empty_commits(
     repository: &mut Repository,
     tx: Sender<WriteObject>,
+    signing_policy: &SigningPolicy,
 ) -> FxHashMap<CommitHash, CommitHash> {
     let mut rewritten_commits: FxHashMap<CommitHash, CommitHash> = FxHashMap::default();
     let mut commit_trees: FxHashMap<CommitHash, TreeHash> = FxHashMap::default();
@@ -58,6 +61,10 @@ fn find_empty_commits(
             .enumerate()
             .for_each(|(i, parent)| commit.set_parent(i, parent));
 
+        signing_policy
+            .sign_if_selected(&mut commit)
+            .expect("failed to sign commit");
+
         let commit_tree = commit.tree();
         let w: WriteObject = commit.into();
 
@@ -73,7 +80,11 @@ fn find_empty_commits(
     rewritten_commits
 }
 
-pub fn remove_empty_commits(repository_path: PathBuf, dry_run: bool) -> Result<(), Box<dyn Error>> {
+pub fn remove_empty_commits(
+    repository_path: PathBuf,
+    dry_run: bool,
+    signing_policy: &SigningPolicy,
+) -> Result<(), Box<dyn Error>> {
     let write_path = repository_path.clone();
     let (tx, rx) = channel();
 
@@ -81,7 +92,7 @@ pub fn remove_empty_commits(repository_path: PathBuf, dry_run: bool) -> Result<(
         thread::spawn(move || Repository::write_commits(write_path, rx.into_iter(), dry_run));
 
     let mut repository = Repository::create(repository_path);
-    let rewritten_commits = find_empty_commits(&mut repository, tx);
+    let rewritten_commits = find_empty_commits(&mut repository, tx, signing_policy);
 
     thread.join().unwrap();
 
