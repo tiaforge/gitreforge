@@ -1,93 +1,206 @@
-# Command-Line Help for `gitrw`
+# gitrw
 
-This document contains the help content for the `gitrw` command-line program.
+`gitrw` rewrites Git history in bare or mirrored repositories. Use it when you
+need to clean sensitive files out of history, fix author or committer identities,
+or remove commits that became empty after a rewrite.
 
-**Command Overview:**
+The tool works directly on Git objects and refs. Because every rewrite creates
+new commit hashes, run it on a mirror clone or another disposable copy first,
+inspect the result, and then force-push the rewritten refs when you are ready.
 
-* [`gitrw`↴](#gitrw)
-* [`gitrw contributor`↴](#gitrw-contributor)
-* [`gitrw contributor list`↴](#gitrw-contributor-list)
-* [`gitrw contributor rewrite`↴](#gitrw-contributor-rewrite)
-* [`gitrw remove`↴](#gitrw-remove)
-* [`gitrw prune-empty`↴](#gitrw-prune-empty)
+## What You Can Do
 
-## `gitrw`
+- List every author and committer identity found in the repository.
+- Rewrite author and committer names and email addresses in existing commits.
+- Remove files, directories, or path patterns from every commit.
+- Prune non-merge commits whose tree is identical to their parent.
+- Re-sign selected rewritten commits with SSH commit signatures.
+- Preview changes with `--dry-run` before modifying the repository.
 
-CLI tool for reading and rewriting history information of a git repository
+## Performance
 
-**Usage:** `gitrw [OPTIONS] [REPOSITORY] <COMMAND>`
+`gitrw` is built for high-throughput history rewrites and performs
+significantly better than most general-purpose alternatives on large
+repositories.
 
-###### **Subcommands:**
+That performance comes from working directly with Git objects and refs instead
+of driving each change through Git commands. `gitrw` reads pack files through
+memory-mapped I/O, parallelizes rewrite work, uses a release allocator tuned for
+throughput, and avoids external command execution in the core rewrite and
+signing paths.
 
-* `contributor` — Contributor related actions like list and rewrite
-* `remove` — Remove files and whole directories from the repository
-* `prune-empty` — Remove empty commits that are no merge commits
+## Installation
 
-###### **Arguments:**
+Build from source with Cargo:
 
-* `<REPOSITORY>` — Path to the mirrored/bare repository (do not use on a repository with a working copy)
+```sh
+cargo build --release
+```
 
-###### **Options:**
+The binary is written to `target/release/gitrw`.
 
-* `-d`, `--dry-run` — Do not change the repository
+## Basic Workflow
 
+Start from a mirror clone so tags, branches, and refs are available without
+using a working tree:
 
+```sh
+git clone --mirror git@example.com:org/project.git project.git
+cd project.git
+```
 
-## `gitrw contributor`
+Run `gitrw` against the mirror repository:
 
-Contributor related actions like list and rewrite
+```sh
+gitrw . contributor list
+gitrw --dry-run . remove --file secrets.env
+gitrw . prune-empty
+```
 
-**Usage:** `gitrw contributor <COMMAND>`
+After a successful rewrite, validate the repository with normal Git tooling.
+When the result is correct, push the rewritten refs according to your repository
+hosting policy.
 
-###### **Subcommands:**
+## Contributor Cleanup
 
-* `list` — Lists all authors and committers
-* `rewrite` — Allows to rewrite contributors. Expects stdin input lines with the format: Old User <old@user.mail> = New User <new@user.mail>
+List all identities:
 
+```sh
+gitrw /path/to/project.git contributor list
+```
 
+Rewrite identities by piping mappings into `contributor rewrite`. Each input
+line maps the full old identity to the full new identity:
 
-## `gitrw contributor list`
+```sh
+cat mappings.txt | gitrw /path/to/project.git contributor rewrite
+```
 
-Lists all authors and committers
+`mappings.txt`:
 
-**Usage:** `gitrw contributor list`
+```text
+Old Name <old@example.com> = New Name <new@example.com>
+Another Old Name <old2@example.com> = Another New Name <new2@example.com>
+```
 
+Only commits matching the old author or committer identity are changed.
 
+## Removing Paths From History
 
-## `gitrw contributor rewrite`
+Remove a specific file everywhere it appears:
 
-Allows to rewrite contributors. Expects stdin input lines with the format: Old User <old@user.mail> = New User <new@user.mail>
+```sh
+gitrw /path/to/project.git remove --file secrets.env
+```
 
-**Usage:** `gitrw contributor rewrite`
+Remove a directory:
 
+```sh
+gitrw /path/to/project.git remove --directory vendor/private
+```
 
+Use a regular expression when the simpler file or directory matchers are not
+enough:
 
-## `gitrw remove`
+```sh
+gitrw /path/to/project.git remove --regex '(^|/)debug-[^/]+\.log$'
+```
 
-Remove files and whole directories from the repository
+You can pass each matcher more than once, and you can combine matcher types in
+one command.
 
-**Usage:** `gitrw remove <--file <FILE>|--directory <DIRECTORY>|--regex <REGEX>>`
+## Pruning Empty Commits
 
-###### **Options:**
+After removing paths, some commits may no longer change the tree. Remove those
+non-merge commits with:
 
-* `-f`, `--file <FILE>` — File to remove. The char '*' can be used as a wildcard at the beginning or end. Path can be absolute or relative, depending on if a '/' is present. Argument can be specified multiple times
-* `-d`, `--directory <DIRECTORY>` — Directory to remove. The char '*' can be used as a wildcard at the begining or end. Path can be absolute or relative, depending on if it starts with a '/'. Argument can be specified multiple times
-* `-r`, `--regex <REGEX>` — Regex to remove files. Matches on the whole path including the filename, which makes it a little more expensive than the file or directory options. Argument can be specified multiple times
+```sh
+gitrw /path/to/project.git prune-empty
+```
 
+Merge commits are preserved.
 
+## Commit Signing
 
-## `gitrw prune-empty`
+History rewrites invalidate existing commit signatures. `gitrw` can add new SSH
+signatures to rewritten commits whose committer email matches
+`--sign-committer`.
 
-Remove empty commits that are no merge commits
+Configure Git for SSH signing before running the rewrite:
 
-**Usage:** `gitrw prune-empty`
+```sh
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+```
 
+Then select the committer email addresses that should be signed:
 
+```sh
+gitrw --sign-committer alice@example.com /path/to/project.git remove --file secrets.env
+gitrw --sign-committer alice@example.com --sign-committer bob@example.com /path/to/project.git prune-empty
+```
 
-<hr/>
+Signing is applied by committer email, not author email. Commits with other
+committer emails are rewritten without a new signature.
 
-<small><i>
-    This document was generated automatically by
-    <a href="https://crates.io/crates/clap-markdown"><code>clap-markdown</code></a>.
-</i></small>
+Supported signing configuration:
 
+- `gpg.format` must be `ssh`.
+- `user.signingkey` may point to a public key file, a private OpenSSH key file,
+  an inline `ssh-...` public key, or a `key::ssh-...` value.
+- If `user.signingkey` is a public key or omitted, signing uses the first
+  suitable key from `SSH_AUTH_SOCK`.
+- Private key files are read and used directly.
+
+Current limitations:
+
+- OpenPGP signing is not supported.
+- `gpg.ssh.program` is not supported because `gitrw` does not execute external
+  signing commands.
+- SSH agent signing currently requires a Unix socket.
+
+## Dry Runs
+
+Add `--dry-run` before the repository path to verify which operations can run
+without writing rewritten objects or updating refs:
+
+```sh
+gitrw --dry-run /path/to/project.git remove --directory generated
+```
+
+## Command Reference
+
+```text
+gitrw [OPTIONS] [REPOSITORY] <COMMAND>
+```
+
+`REPOSITORY` is the path to a bare or mirrored repository. If omitted, `gitrw`
+uses the current directory.
+
+Global options:
+
+- `-d`, `--dry-run`: do not change the repository.
+- `--sign-committer <EMAIL>`: re-sign rewritten commits whose committer email
+  matches this value. Can be specified multiple times.
+
+Commands:
+
+- `contributor list`: list all author and committer identities.
+- `contributor rewrite`: rewrite identities from stdin mappings in the form
+  `Old User <old@example.com> = New User <new@example.com>`.
+- `remove --file <FILE>`: remove matching files from history. `*` can be used
+  as a wildcard at the beginning or end.
+- `remove --directory <DIRECTORY>`: remove matching directories from history.
+  `*` can be used as a wildcard at the beginning or end.
+- `remove --regex <REGEX>`: remove paths whose full repository path matches the
+  regular expression.
+- `prune-empty`: remove empty non-merge commits.
+
+## Safety Notes
+
+- Do not run `gitrw` on a repository with a working copy.
+- Keep a backup or fresh mirror clone until you have verified the rewritten
+  history.
+- Coordinate force-pushes with other users of the repository.
+- Treat old clones, forks, pull requests, and CI caches as possible places where
+  removed data can still exist after a history rewrite.
