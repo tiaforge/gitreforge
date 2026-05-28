@@ -3,7 +3,7 @@ use std::error::Error;
 
 use std::fs::{self, File};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use memmap2::Mmap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -21,28 +21,15 @@ struct Pack {
     pack_file: String,
 }
 
-struct PackWithObjects {
-    pack: Mmap,
-    objects: Arc<RwLock<FxHashMap<ObjectHash, usize>>>,
-    pack_file: String,
-}
-
 #[derive(Clone)]
 pub struct PackReader {
     packs: Vec<PackWithObjects>,
 }
 
-impl Clone for PackWithObjects {
-    fn clone(&self) -> Self {
-        let pack_file = File::open(self.pack_file.clone()).unwrap();
-        let pack_map = unsafe { Mmap::map(&pack_file).unwrap() };
-
-        Self {
-            pack: pack_map,
-            objects: self.objects.clone(),
-            pack_file: self.pack_file.clone(),
-        }
-    }
+#[derive(Clone)]
+struct PackWithObjects {
+    pack: Arc<Mmap>,
+    objects: Arc<FxHashMap<ObjectHash, usize>>,
 }
 
 impl PackReader {
@@ -54,19 +41,16 @@ impl PackReader {
             let pack_map = unsafe { Mmap::map(&pack_file)? };
 
             let pack_offsets = get_pack_offsets(Path::new(&pack.idx_file)).unwrap();
-            let offsets = Arc::new(RwLock::new(FxHashMap::with_capacity_and_hasher(
-                pack_offsets.len(),
-                FxBuildHasher::default(),
-            )));
+            let mut offsets =
+                FxHashMap::with_capacity_and_hasher(pack_offsets.len(), FxBuildHasher::default());
 
             for offset in pack_offsets.into_iter() {
-                offsets.write().unwrap().insert(offset.hash, offset.offset);
+                offsets.insert(offset.hash, offset.offset);
             }
 
             packs_with_objects.push(PackWithObjects {
-                pack: pack_map,
-                objects: offsets,
-                pack_file: pack.pack_file,
+                pack: Arc::new(pack_map),
+                objects: Arc::new(offsets),
             });
         }
 
@@ -158,10 +142,8 @@ fn get_offset<'a>(
     for pack in pack_reader.packs.iter() {
         if let Some(result) = pack
             .objects
-            .read()
-            .unwrap()
             .get(object_hash)
-            .map(|x| (&pack.pack, *x))
+            .map(|x| (pack.pack.as_ref(), *x))
         {
             return Some(result);
         }
