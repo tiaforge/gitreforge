@@ -8,22 +8,21 @@ use std::{
 use flate2::Status;
 use libdeflater::Decompressor;
 use memmap2::Mmap;
-use once_cell::sync::Lazy;
 
-use crate::{packreader::PackObject, WriteBytes};
+use crate::{WriteBytes, packreader::PackObject};
 
 pub struct Decompression {
-    libdeflate_decompressor: Decompressor,
-    flate2_decompressor: flate2::Decompress,
-    file_buf: Lazy<[u8; 8192]>,
+    libdeflate_decompressor: Box<Decompressor>,
+    flate2_decompressor: Box<flate2::Decompress>,
+    file_buf: Option<Box<[u8; 8192]>>,
 }
 
 impl Default for Decompression {
     fn default() -> Self {
         Self {
-            libdeflate_decompressor: Decompressor::new(),
-            flate2_decompressor: flate2::Decompress::new(false),
-            file_buf: Lazy::new(|| [0u8; 8192]),
+            libdeflate_decompressor: Box::new(Decompressor::new()),
+            flate2_decompressor: Box::new(flate2::Decompress::new(false)),
+            file_buf: None,
         }
     }
 }
@@ -84,7 +83,7 @@ impl Decompression {
 
         self.flate2_decompressor.reset(false);
 
-        let buffer = &mut self.file_buf[..];
+        let buffer = self.file_buf.get_or_insert_with(|| Box::new([0u8; 8192]));
 
         let mut status = Status::Ok;
         while status == Status::Ok {
