@@ -420,13 +420,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitrw"
+name = "gitreforge"
 version = "0.1.0"
 dependencies = [
  "bstr",
  "clap",
  "clap-markdown",
- "gitrwlib",
+ "gitreforgelib",
  "mimalloc",
  "rayon",
  "regex",
@@ -435,7 +435,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitrwlib"
+name = "gitreforgelib"
 version = "0.1.0"
 dependencies = [
  "bstr",

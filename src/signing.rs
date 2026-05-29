@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gitrwlib::objs::CommitEditable;
+use gitreforgelib::objs::CommitEditable;
 use rustc_hash::FxHashSet;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, Signature, SshSig};
 

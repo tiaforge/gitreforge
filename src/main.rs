@@ -133,7 +133,7 @@ mod tests {
     use std::sync::mpsc::channel;
 
     use bstr::ByteSlice;
-    use gitrwlib::objs::{CommitBase, CommitEditable, CommitHash};
+    use gitreforgelib::objs::{CommitBase, CommitEditable, CommitHash};
 
     const BYTES: &[u8] = b"tree 31aa860596f003d69b896943677e9fe5ff208233\nparent 5eec99927bb6058c8180e5dac871c89c7d01b0ab\nauthor Tim Heinrich <2929650+TimHeinrich@users.noreply.github.com> 1688207675 +0200\ncommitter Tim Heinrich <2929650+TimHeinrich@users.noreply.github.com> 1688209149 +0200\n\nChanging of commit data\n";
 

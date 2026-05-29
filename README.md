@@ -1,6 +1,6 @@
-# gitrw
+# gitreforge
 
-`gitrw` rewrites Git history in bare or mirrored repositories. Use it when you
+`gitreforge` rewrites Git history in bare or mirrored repositories. Use it when you
 need to clean sensitive files out of history, fix author or committer identities,
 or remove commits that became empty after a rewrite.
 
@@ -19,12 +19,12 @@ inspect the result, and then force-push the rewritten refs when you are ready.
 
 ## Performance
 
-`gitrw` is built for high-throughput history rewrites and performs
+`gitreforge` is built for high-throughput history rewrites and performs
 significantly better than most general-purpose alternatives on large
 repositories.
 
 That performance comes from working directly with Git objects and refs instead
-of driving each change through Git commands. `gitrw` reads pack files through
+of driving each change through Git commands. `gitreforge` reads pack files through
 memory-mapped I/O, parallelizes rewrite work, uses a release allocator tuned for
 throughput, and avoids external command execution in the core rewrite and
 signing paths.
@@ -37,7 +37,7 @@ Build from source with Cargo:
 cargo build --release
 ```
 
-The binary is written to `target/release/gitrw`.
+The binary is written to `target/release/gitreforge`.
 
 ## Basic Workflow
 
@@ -49,12 +49,12 @@ git clone --mirror git@example.com:org/project.git project.git
 cd project.git
 ```
 
-Run `gitrw` against the mirror repository:
+Run `gitreforge` against the mirror repository:
 
 ```sh
-gitrw . contributor list
-gitrw --dry-run . remove --file secrets.env
-gitrw . prune-empty
+gitreforge . contributor list
+gitreforge --dry-run . remove --file secrets.env
+gitreforge . prune-empty
 ```
 
 After a successful rewrite, validate the repository with normal Git tooling.
@@ -66,14 +66,14 @@ hosting policy.
 List all identities:
 
 ```sh
-gitrw /path/to/project.git contributor list
+gitreforge /path/to/project.git contributor list
 ```
 
 Rewrite identities by piping mappings into `contributor rewrite`. Each input
 line maps the full old identity to the full new identity:
 
 ```sh
-cat mappings.txt | gitrw /path/to/project.git contributor rewrite
+cat mappings.txt | gitreforge /path/to/project.git contributor rewrite
 ```
 
 `mappings.txt`:
@@ -90,20 +90,20 @@ Only commits matching the old author or committer identity are changed.
 Remove a specific file everywhere it appears:
 
 ```sh
-gitrw /path/to/project.git remove --file secrets.env
+gitreforge /path/to/project.git remove --file secrets.env
 ```
 
 Remove a directory:
 
 ```sh
-gitrw /path/to/project.git remove --directory vendor/private
+gitreforge /path/to/project.git remove --directory vendor/private
 ```
 
 Use a regular expression when the simpler file or directory matchers are not
 enough:
 
 ```sh
-gitrw /path/to/project.git remove --regex '(^|/)debug-[^/]+\.log$'
+gitreforge /path/to/project.git remove --regex '(^|/)debug-[^/]+\.log$'
 ```
 
 You can pass each matcher more than once, and you can combine matcher types in
@@ -115,14 +115,14 @@ After removing paths, some commits may no longer change the tree. Remove those
 non-merge commits with:
 
 ```sh
-gitrw /path/to/project.git prune-empty
+gitreforge /path/to/project.git prune-empty
 ```
 
 Merge commits are preserved.
 
 ## Commit Signing
 
-History rewrites invalidate existing commit signatures. `gitrw` can add new SSH
+History rewrites invalidate existing commit signatures. `gitreforge` can add new SSH
 signatures to rewritten commits whose committer email matches
 `--sign-committer`.
 
@@ -136,8 +136,8 @@ git config --global user.signingkey ~/.ssh/id_ed25519.pub
 Then select the committer email addresses that should be signed:
 
 ```sh
-gitrw --sign-committer alice@example.com /path/to/project.git remove --file secrets.env
-gitrw --sign-committer alice@example.com --sign-committer bob@example.com /path/to/project.git prune-empty
+gitreforge --sign-committer alice@example.com /path/to/project.git remove --file secrets.env
+gitreforge --sign-committer alice@example.com --sign-committer bob@example.com /path/to/project.git prune-empty
 ```
 
 Signing is applied by committer email, not author email. Commits with other
@@ -155,7 +155,7 @@ Supported signing configuration:
 Current limitations:
 
 - OpenPGP signing is not supported.
-- `gpg.ssh.program` is not supported because `gitrw` does not execute external
+- `gpg.ssh.program` is not supported because `gitreforge` does not execute external
   signing commands.
 - SSH agent signing currently requires a Unix socket.
 
@@ -165,16 +165,16 @@ Add `--dry-run` before the repository path to verify which operations can run
 without writing rewritten objects or updating refs:
 
 ```sh
-gitrw --dry-run /path/to/project.git remove --directory generated
+gitreforge --dry-run /path/to/project.git remove --directory generated
 ```
 
 ## Command Reference
 
 ```text
-gitrw [OPTIONS] [REPOSITORY] <COMMAND>
+gitreforge [OPTIONS] [REPOSITORY] <COMMAND>
 ```
 
-`REPOSITORY` is the path to a bare or mirrored repository. If omitted, `gitrw`
+`REPOSITORY` is the path to a bare or mirrored repository. If omitted, `gitreforge`
 uses the current directory.
 
 Global options:
@@ -198,7 +198,7 @@ Commands:
 
 ## Safety Notes
 
-- Do not run `gitrw` on a repository with a working copy.
+- Do not run `gitreforge` on a repository with a working copy.
 - Keep a backup or fresh mirror clone until you have verified the rewritten
   history.
 - Coordinate force-pushes with other users of the repository.
