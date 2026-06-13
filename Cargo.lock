@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "gitreforge"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bstr",
  "clap",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "gitreforgelib"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bstr",
  "flate2",
