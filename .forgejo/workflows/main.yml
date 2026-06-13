@@ -1,0 +1,36 @@
+name: Build and test main branch
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: linux
+    container:
+      image: docker.io/library/rust:1-bookworm
+      env:
+        CARGO_HOME: /cargo-cache
+        CARGO_TARGET_DIR: /workspace-target/gitreforge
+      volumes:
+        - gitreforge-cargo-cache:/cargo-cache
+        - gitreforge-target-cache:/workspace-target
+
+    steps:
+      - name: Check out repository
+        run: git clone --depth 1 --branch ${{ github.ref_name }} ${{ github.server_url }}/${{ github.repository }}.git .
+
+      - name: Show build cache state
+        run: |
+          set -eu
+
+          rustc --version
+          cargo --version
+          echo "CARGO_HOME=$CARGO_HOME"
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+          ls -la "$CARGO_HOME" 2>/dev/null || true
+          ls -la "$CARGO_TARGET_DIR" 2>/dev/null || true
+
+      - name: Test
+        run: cargo test --release --locked
