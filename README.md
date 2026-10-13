@@ -29,6 +29,25 @@ memory-mapped I/O, parallelizes rewrite work, uses a release allocator tuned for
 throughput, and avoids external command execution in the core rewrite and
 signing paths.
 
+### Benchmarks
+
+Wall-clock time to rewrite the full history of a mirror clone, compared with
+[git filter-repo](https://github.com/newren/git-filter-repo) 2.47 and
+[BFG Repo-Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) 1.15:
+
+| Repository | Task | gitreforge | git filter-repo | BFG |
+|:---|:---|---:|---:|---:|
+| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-util/` | **1.5 s** | 2.7 s (1.8×) | 10.3 s (7.0×) |
+| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-*/` (wildcard) | **1.9 s** | 2.4 s (1.3×) | 10.3 s (5.6×) |
+| [git](https://github.com/git/git) (205k commits) | Remove `Documentation/` | **36 s** | 69 s (1.9×) | 88 s (2.4×) |
+| [git](https://github.com/git/git) (205k commits) | Rename an author (7 identities) | **18 s** | 60 s (3.3×) | not supported |
+
+All tools only rewrite history: no `git gc` or repack, and empty commits are
+kept, so every tool produces the same trees and identities. Measured with
+[hyperfine](https://github.com/sharkdp/hyperfine) on an AMD Ryzen Z2 Extreme
+with NVMe storage. Reproduce with `bench/rewrite.sh <scenario>`; the script
+downloads the other tools and lists the available scenarios.
+
 ## Installation
 
 Build from source with Cargo:
