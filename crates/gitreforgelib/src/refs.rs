@@ -146,17 +146,10 @@ impl GitRef {
 
                 tree.hash().0.clone()
             }
-            crate::objs::GitObject::Tag(mut target_tag) => match target_tag.target_type() {
-                TagTargetType::Commit => {
-                    let target_hash = CommitHash(target_tag.object());
-                    let target_tag_object =
-                        rewritten_commits.get(&target_hash).unwrap_or(&target_hash);
-
-                    target_tag.set_object(target_tag_object.clone().0);
-                    let tag = Tag::create(None, target_tag.to_bytes(), false);
-                    let tag_hash = tag.hash().clone();
-                    Repository::write(repository.path.clone(), tag.into(), dry_run);
-                    let target_hash = tag_hash;
+            crate::objs::GitObject::Tag(target_tag) => match target_tag.target_type() {
+                TagTargetType::Commit | TagTargetType::Tag => {
+                    let target_hash =
+                        Self::rewrite_tag(repository, target_tag, rewritten_commits, dry_run);
 
                     Self::write_ref(
                         repository.path.to_str().unwrap(),
@@ -164,23 +157,48 @@ impl GitRef {
                         target_hash.to_string().as_str(),
                     );
 
-                    target_hash.clone()
+                    target_hash
                 }
-                TagTargetType::Tree => {
+                TagTargetType::Tree | TagTargetType::Blob => {
                     let target_tag_hash = target_tag.hash().clone();
                     Repository::write(repository.path.clone(), target_tag.into(), dry_run);
                     target_tag_hash
-                }
-                TagTargetType::Blob => {
-                    let target_tag_hash = target_tag.hash().clone();
-                    Repository::write(repository.path.clone(), target_tag.into(), dry_run);
-                    target_tag_hash
-                }
-                TagTargetType::Tag => {
-                    panic!("Did not expect a tag to point to another tag");
                 }
             },
         }
+    }
+
+    /// Rewrites an annotated tag that points to a commit or (recursively) to
+    /// another tag and returns the hash of the rewritten tag.
+    fn rewrite_tag<T: BuildHasher>(
+        repository: &mut Repository,
+        mut tag: Tag,
+        rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
+        dry_run: bool,
+    ) -> ObjectHash {
+        let new_object = match tag.target_type() {
+            TagTargetType::Commit => {
+                let target_hash = CommitHash(tag.object());
+                rewritten_commits
+                    .get(&target_hash)
+                    .unwrap_or(&target_hash)
+                    .clone()
+                    .0
+            }
+            TagTargetType::Tag => match repository.read_object(tag.object()).unwrap() {
+                crate::objs::GitObject::Tag(inner) => {
+                    Self::rewrite_tag(repository, inner, rewritten_commits, dry_run)
+                }
+                _ => panic!("Tag {} does not point to a tag object", tag.name()),
+            },
+            TagTargetType::Tree | TagTargetType::Blob => tag.object(),
+        };
+
+        tag.set_object(new_object);
+        let tag = Tag::create(None, tag.to_bytes(), false);
+        let tag_hash = tag.hash().clone();
+        Repository::write(repository.path.clone(), tag.into(), dry_run);
+        tag_hash
     }
 }
 

@@ -110,3 +110,59 @@ fn remove_no_match_does_not_overflow_on_two_commit_repo() -> Result<(), Box<dyn 
 
     run_gitreforge_remove_dry_run(&repo.bare)
 }
+
+fn git_output(repo: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+#[test]
+fn remove_rewrites_tag_pointing_to_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let repo = TestRepo::create("nested-tag")?;
+    fs::write(repo.work.join("secret.txt"), "secret\n")?;
+    run(Command::new("git")
+        .args(["add", "secret.txt"])
+        .current_dir(&repo.work))?;
+    repo.commit_file("one\n", "one")?;
+    run(Command::new("git")
+        .args(["tag", "-a", "inner", "-m", "inner"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["tag", "-a", "outer", "inner", "-m", "outer"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["push", "origin", "inner", "outer"])
+        .current_dir(&repo.work))?;
+
+    run(Command::new(env!("CARGO_BIN_EXE_gitreforge"))
+        .arg(&repo.bare)
+        .args(["remove", "--file", "secret.txt"])
+        .current_dir(&repo.root))?;
+
+    assert_eq!(git_output(&repo.bare, &["cat-file", "-t", "outer"])?, "tag");
+    assert_eq!(
+        git_output(&repo.bare, &["cat-file", "-t", "outer^{}"])?,
+        "commit"
+    );
+    assert_eq!(
+        git_output(&repo.bare, &["rev-parse", "outer^{commit}"])?,
+        git_output(&repo.bare, &["rev-parse", "main"])?
+    );
+    assert_eq!(
+        git_output(&repo.bare, &["ls-tree", "--name-only", "outer^{commit}"])?,
+        "keep.txt"
+    );
+    Ok(())
+}
