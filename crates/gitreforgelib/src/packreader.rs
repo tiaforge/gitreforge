@@ -13,7 +13,8 @@ use crate::idx_reader::get_pack_offsets;
 use crate::objs::{CommitBase, Tag};
 use crate::objs::{GitObject, Tree};
 use crate::delta_cache;
-use crate::pack_diff::PackDiff;
+use crate::pack_diff::{PackDiff, read_base_offset};
+use rayon::prelude::*;
 use crate::shared::ObjectHash;
 
 #[derive(Debug)]
@@ -80,6 +81,38 @@ impl PackReader {
         }
     }
 
+    /// Read and parse every commit object in the packs, in parallel. Used to
+    /// take the decompression off the (sequential) history walk. Includes
+    /// commits that aren't reachable; REF_DELTA commits are left out and
+    /// read on demand.
+    pub fn read_all_commits(&self) -> FxHashMap<ObjectHash, CommitBase> {
+        // own pool: callers may already block the global one, e.g. with a
+        // writer that waits for the commits this walk produces
+        let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+        pool.install(|| self.read_all_commits_in_pool())
+    }
+
+    fn read_all_commits_in_pool(&self) -> FxHashMap<ObjectHash, CommitBase> {
+        self.packs
+            .iter()
+            .flat_map(|pack| {
+                let mmap = pack.pack.as_ref();
+                pack.objects
+                    .par_iter()
+                    .map_init(Decompression::default, |decompression, (hash, offset)| {
+                        if base_type(mmap, *offset) != 1 {
+                            return None;
+                        }
+                        let (bytes, _) = self.read_git_object_bytes(decompression, hash)?;
+                        let commit = CommitBase::create(hash.clone().into(), bytes, false);
+                        Some((hash.clone(), commit))
+                    })
+                    .flatten()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub fn read_git_object_bytes(
         &self,
         decompression: &mut Decompression,
@@ -116,6 +149,21 @@ impl PackReader {
         }
 
         None
+    }
+}
+
+/// Type of the object at `offset`, following OFS_DELTA headers down to the
+/// base without decompressing anything. 0 for REF_DELTA.
+fn base_type(mmap: &Mmap, offset: usize) -> u8 {
+    let mut object = PackObject::create(mmap, offset);
+    while object.object_type == 6 {
+        let (negative_offset, _) = read_base_offset(mmap, &object);
+        object = PackObject::create(mmap, object.offset - negative_offset);
+    }
+    if object.object_type == 7 {
+        0
+    } else {
+        object.object_type
     }
 }
 

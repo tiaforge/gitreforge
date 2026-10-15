@@ -2,7 +2,7 @@ use core::panic;
 use std::path::Path;
 
 use bstr::ByteSlice;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     objs::{CommitBase, CommitHash, Tag, Tree},
@@ -23,6 +23,7 @@ pub(crate) struct CommitsFifoIter<'a> {
     commits: Vec<CommitBase>,
     processed_commits: FxHashSet<CommitHash>,
     parents_seen: FxHashSet<CommitHash>,
+    prefetched: FxHashMap<ObjectHash, CommitBase>,
 }
 
 impl<'a> CommitsFifoIter<'a> {
@@ -30,6 +31,7 @@ impl<'a> CommitsFifoIter<'a> {
         repository_path: &'a Path,
         pack_reader: &'a PackReader,
         mut decompression: Decompression,
+        prefetch: bool,
     ) -> Self {
         let mut commits = Vec::new();
         let processed_commits = FxHashSet::default();
@@ -58,6 +60,11 @@ impl<'a> CommitsFifoIter<'a> {
             commits,
             processed_commits,
             parents_seen,
+            prefetched: if prefetch {
+                pack_reader.read_all_commits()
+            } else {
+                FxHashMap::default()
+            },
         }
     }
 }
@@ -77,6 +84,10 @@ impl<'a> Iterator for CommitsFifoIter<'a> {
                 self.commits.push(commit);
                 for parent in parents {
                     if !self.processed_commits.contains(&parent) {
+                        if let Some(pc) = self.prefetched.remove(&parent.0) {
+                            self.commits.push(pc);
+                            continue;
+                        }
                         let parent_commit = read_object_from_hash(
                             &mut self.compression,
                             self.repository_path,
@@ -104,6 +115,7 @@ pub(crate) struct CommitsLifoIter<'a> {
     repository_path: &'a Path,
     commits: Vec<CommitBase>,
     processed_commits: FxHashSet<CommitHash>,
+    prefetched: FxHashMap<ObjectHash, CommitBase>,
 }
 
 impl<'a> CommitsLifoIter<'a> {
@@ -111,6 +123,7 @@ impl<'a> CommitsLifoIter<'a> {
         repository_path: &'a Path,
         pack_reader: &'a PackReader,
         mut decompression: Decompression,
+        prefetch: bool,
     ) -> CommitsLifoIter<'a> {
         let mut commits = Vec::new();
         let processed_commits = FxHashSet::default();
@@ -137,6 +150,11 @@ impl<'a> CommitsLifoIter<'a> {
             commits,
             processed_commits,
             decompression,
+            prefetched: if prefetch {
+                pack_reader.read_all_commits()
+            } else {
+                FxHashMap::default()
+            },
         }
     }
 }
@@ -154,6 +172,10 @@ impl<'a> Iterator for CommitsLifoIter<'a> {
                     .map(|(i, _)| commit.get_str(|c| &c.parents[i]).try_into().unwrap())
                 {
                     if !self.processed_commits.contains(&parent) {
+                        if let Some(pc) = self.prefetched.remove(&parent.0) {
+                            self.commits.push(pc);
+                            continue;
+                        }
                         if let Some(parent_commit) = read_object_from_hash(
                             &mut self.decompression,
                             self.repository_path,

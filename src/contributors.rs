@@ -54,7 +54,7 @@ pub fn rewrite(
 
     let mut repository = Repository::create(repository_path);
     let mut rewritten_commits: HashMap<CommitHash, CommitHash, _> = FxHashMap::default();
-    for mut commit in repository.commits_topo().map(CommitEditable::create) {
+    for mut commit in repository.commits_topo_prefetched().map(CommitEditable::create) {
         if let Some(new_author) = mappings.get(commit.author_bytes()) {
             commit.set_author(new_author.clone());
         }

@@ -202,11 +202,18 @@ impl Repository {
     }
 
     pub fn commits_topo(&self) -> impl Iterator<Item = CommitBase> + '_ {
-        CommitsFifoIter::create(&self.path, &self.pack_reader, Decompression::default())
+        CommitsFifoIter::create(&self.path, &self.pack_reader, Decompression::default(), false)
+    }
+
+    /// Like `commits_topo`, but first reads all commits of the packs in
+    /// parallel. Faster when the caller processes the commits sequentially,
+    /// slower when its own work already overlaps with the walk.
+    pub fn commits_topo_prefetched(&self) -> impl Iterator<Item = CommitBase> + '_ {
+        CommitsFifoIter::create(&self.path, &self.pack_reader, Decompression::default(), true)
     }
 
     pub fn commits_lifo(&self) -> impl Iterator<Item = CommitBase> + '_ {
-        CommitsLifoIter::create(&self.path, &self.pack_reader, Decompression::default())
+        CommitsLifoIter::create(&self.path, &self.pack_reader, Decompression::default(), true)
     }
 
     pub fn refs(&self) -> Result<Vec<GitRef>, Box<dyn Error>> {
