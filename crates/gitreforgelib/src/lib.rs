@@ -2,7 +2,7 @@ use core::panic;
 use std::{
     collections::HashMap,
     error::Error,
-    hash::{BuildHasher, Hasher},
+    hash::BuildHasher,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
 };
@@ -14,7 +14,7 @@ use objs::{CommitBase, CommitEditable, CommitHash, GitObject, Tag, Tree};
 use packreader::PackReader;
 use rayon::prelude::{ParallelBridge, ParallelIterator};
 use refs::GitRef;
-use rs_sha1::{HasherContext, Sha1Hasher};
+use sha1::{Digest, Sha1};
 use rustc_hash::FxBuildHasher;
 use shared::ObjectHash;
 
@@ -109,14 +109,13 @@ impl From<Tree> for WriteObject {
 }
 
 pub fn calculate_hash(data: &[u8], prefix: &[u8]) -> ObjectHash {
-    let mut hasher = Sha1Hasher::default();
-    hasher.write(prefix);
-    hasher.write(b" ");
-    hasher.write(data.len().to_string().as_bytes());
-    hasher.write(b"\0");
-    hasher.write(data);
-    let bytes = HasherContext::finish(&mut hasher);
-    let bytes: [u8; 20] = bytes.into();
+    let mut hasher = Sha1::new();
+    hasher.update(prefix);
+    hasher.update(b" ");
+    hasher.update(data.len().to_string().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(data);
+    let bytes: [u8; 20] = hasher.finalize().into();
     ObjectHash::from(bytes)
 }
 
