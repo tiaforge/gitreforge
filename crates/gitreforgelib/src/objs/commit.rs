@@ -388,6 +388,12 @@ fn push_folded_signature(result: &mut Vec<u8>, signature: &[u8]) {
 }
 
 fn strip_signature_headers(remainder: &[u8]) -> Vec<u8> {
+    // no extra headers: the remainder starts with the blank line before the
+    // message, and the next "\n\n" would be inside the message
+    if remainder.starts_with(b"\n") {
+        return remainder.to_vec();
+    }
+
     let message_start = remainder
         .windows(2)
         .position(|window| window == b"\n\n")
@@ -469,6 +475,31 @@ message\n";
 
         assert!(!result.as_bstr().contains_str("gpgsig"));
         assert!(result.as_bstr().contains_str("encoding UTF-8\n\nmessage\n"));
+    }
+
+    #[test]
+    fn changed_commit_keeps_message_title() {
+        let bytes = b"tree 31aa860596f003d69b896943677e9fe5ff208233\n\
+author A User <a@example.com> 1688207675 +0200\n\
+committer C User <c@example.com> 1688209149 +0200\n\
+\n\
+title\n\
+\n\
+body\n";
+        let mut commit =
+            CommitEditable::create(CommitBase::create(hash(), bytes.to_vec().into(), false));
+        commit.set_author(b"Other User <other@example.com>".to_vec());
+
+        let result = commit.to_bytes();
+        let result = result.get_bytes();
+
+        assert!(
+            result
+                .as_bstr()
+                .ends_with_str("+0200\n\ntitle\n\nbody\n"),
+            "{}",
+            result.as_bstr()
+        );
     }
 
     #[test]

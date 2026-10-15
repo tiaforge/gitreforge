@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs::File,
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{self, BufWriter, Write},
     path::Path,
 };
 
@@ -14,7 +14,6 @@ use crate::{WriteBytes, packreader::PackObject};
 pub struct Decompression {
     libdeflate_decompressor: Box<Decompressor>,
     flate2_decompressor: Box<flate2::Decompress>,
-    file_buf: Option<Box<[u8; 8192]>>,
 }
 
 impl Default for Decompression {
@@ -22,7 +21,6 @@ impl Default for Decompression {
         Self {
             libdeflate_decompressor: Box::new(Decompressor::new()),
             flate2_decompressor: Box::new(flate2::Decompress::new(false)),
-            file_buf: None,
         }
     }
 }
@@ -85,35 +83,74 @@ impl Decompression {
         let (x, xs) = hash_code.split_at(2);
         let file_path = base_path.join("objects").join(x).join(xs);
 
-        let file = File::open(file_path)?;
-        let mut buf_reader = BufReader::new(file);
-        buf_reader.seek_relative(2).unwrap();
-
-        let mut output_buf = Vec::new();
+        let compressed = std::fs::read(file_path)?;
+        // skip the zlib header, the decompressor reads raw deflate
+        let input = compressed.get(2..).ok_or("loose object is too short")?;
 
         self.flate2_decompressor.reset(false);
+        let mut output_buf = Vec::with_capacity(input.len() * 4);
 
-        let buffer = self.file_buf.get_or_insert_with(|| Box::new([0u8; 8192]));
-
-        let mut status = Status::Ok;
-        while status == Status::Ok {
-            let bytes_read = buf_reader.read(buffer.as_mut()).unwrap();
-            if bytes_read == 0 {
-                break;
+        loop {
+            if output_buf.capacity() - output_buf.len() < 8192 {
+                output_buf.reserve(output_buf.capacity().max(8192));
             }
 
-            output_buf.reserve(bytes_read * 2);
+            let total_in = self.flate2_decompressor.total_in();
+            let total_out = self.flate2_decompressor.total_out();
+            let status = self.flate2_decompressor.decompress_vec(
+                &input[total_in as usize..],
+                &mut output_buf,
+                flate2::FlushDecompress::None,
+            )?;
 
-            status = self
-                .flate2_decompressor
-                .decompress_vec(
-                    &buffer[0..bytes_read],
-                    &mut output_buf,
-                    flate2::FlushDecompress::None,
-                )
-                .unwrap();
+            if status == Status::StreamEnd {
+                break;
+            }
+            if self.flate2_decompressor.total_in() == total_in
+                && self.flate2_decompressor.total_out() == total_out
+            {
+                return Err("loose object is truncated or corrupt".into());
+            }
         }
 
         Ok(output_buf.into_boxed_slice())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn unpack_file_reads_highly_compressible_object_completely() {
+        let repo = std::env::temp_dir().join(format!(
+            "gitreforge-unpack-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        std::fs::create_dir_all(repo.join("objects").join(&hash[..2])).unwrap();
+
+        // compresses far better than 1:2, so the inflated data outgrows
+        // what a single read chunk reserves
+        let data: Vec<u8> = b"Signed-off-by: A User <a@example.com>\n".repeat(2000);
+        let write_bytes = WriteBytes {
+            bytes: data.clone().into_boxed_slice(),
+            start: 0,
+        };
+        pack_file(
+            &repo.join("objects").join(&hash[..2]).join(&hash[2..]),
+            "commit",
+            &write_bytes,
+        )
+        .unwrap();
+
+        let result = Decompression::default().unpack_file(&repo, hash);
+        std::fs::remove_dir_all(&repo).unwrap();
+
+        let mut expected = format!("commit {}\0", data.len()).into_bytes();
+        expected.extend_from_slice(&data);
+        assert_eq!(result.unwrap().len(), expected.len());
     }
 }
