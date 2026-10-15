@@ -144,6 +144,55 @@ fn build_file_delete_patterns(files: &[String]) -> DynFn2<'_> {
     delete_file
 }
 
+/// Directories that can contain something to remove, when every pattern is
+/// anchored at an absolute path. A subtree whose path isn't a prefix of one
+/// of these can't change, so update_tree doesn't need to read it. Returns
+/// None when any pattern can match anywhere (relative, leading '*', regex).
+fn build_descend_filter<'a>(
+    files: &'a [String],
+    directories: &'a [String],
+    regexes: &[String],
+) -> Option<Vec<&'a [u8]>> {
+    if !regexes.is_empty() {
+        return None;
+    }
+
+    let mut anchors = Vec::new();
+    for folder in directories.iter().map(|f| f.as_bytes()) {
+        if folder[0] != b'/' {
+            return None;
+        }
+        // "/x/y*" matches every path starting with "/x/y"
+        anchors.push(folder.strip_suffix(b"*").unwrap_or(folder));
+    }
+
+    for file in files.iter().map(|f| f.as_bytes()) {
+        if file[0] != b'/' {
+            return None;
+        }
+        // "/some/folder/file" and "/some/folder/file*" only match in "/some/folder/"
+        let last_slash = last_index_of(file, b'/').unwrap();
+        anchors.push(&file[..last_slash + 1]);
+    }
+
+    Some(anchors)
+}
+
+fn build_descend_pattern<'a>(
+    files: &'a [String],
+    directories: &'a [String],
+    regexes: &[String],
+) -> DynFn<'a> {
+    if std::env::var_os("GITREFORGE_NO_PRUNE").is_some() {
+        return b!(|_| true);
+    }
+
+    match build_descend_filter(files, directories, regexes) {
+        None => b!(|_| true),
+        Some(anchors) => b!(move |path: &[u8]| anchors.iter().any(|a| a.starts_with(path))),
+    }
+}
+
 /// Old tree hash to its rewritten hash (None: unchanged), sharded by the
 /// first hash byte so that the worker threads rarely contend on a lock.
 pub(crate) struct RewrittenTrees {
@@ -183,6 +232,7 @@ fn update_tree(
     should_delete_file: &DynFn2,
     should_delete_folder: &DynFn,
     should_remove: &DynFn2,
+    should_descend: &DynFn,
     rewritten_trees: &RewrittenTrees,
     write_tree: &(impl Fn(Tree, &[u8]) + Sync + Send),
 ) -> Option<TreeHash> {
@@ -209,6 +259,8 @@ fn update_tree(
             if should_delete_folder(path) {
                 path.truncate(path_len);
                 changed = true;
+            } else if !should_descend(path) {
+                path.truncate(path_len);
             } else {
                 let new_tree_hash = update_tree(
                     line.hash.deref().clone(),
@@ -217,6 +269,7 @@ fn update_tree(
                     should_delete_file,
                     should_delete_folder,
                     should_remove,
+                    should_descend,
                     rewritten_trees,
                     write_tree,
                 );
@@ -346,6 +399,7 @@ pub fn remove(
         let file_delete_patterns = build_file_delete_patterns(&files);
         let folder_delete_patterns = build_folder_delete_patterns(&directories);
         let should_remove_line = build_regex_pattern(&regexes);
+        let should_descend = build_descend_pattern(&files, &directories, &regexes);
         repository
             .commits_topo()
             .enumerate()
@@ -360,6 +414,7 @@ pub fn remove(
                     &file_delete_patterns,
                     &folder_delete_patterns,
                     &should_remove_line,
+                    &should_descend,
                     &rewritten_trees,
                     &|tree, path| {
                         if !dry_run {
@@ -436,7 +491,40 @@ fn update_parents(
 
 #[cfg(test)]
 mod test {
-    use super::build_folder_delete_patterns;
+    use super::{build_descend_filter, build_folder_delete_patterns};
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    pub fn descend_filter_only_for_absolute_patterns() {
+        let none: Vec<String> = vec![];
+        assert!(build_descend_filter(&none, &strings(&["docs"]), &none).is_none());
+        assert!(build_descend_filter(&none, &strings(&["*docs"]), &none).is_none());
+        assert!(build_descend_filter(&strings(&["*.zip"]), &none, &none).is_none());
+        assert!(build_descend_filter(&strings(&["secret*"]), &none, &none).is_none());
+        assert!(build_descend_filter(&strings(&["/a/b"]), &none, &strings(&["x"])).is_none());
+        assert!(
+            build_descend_filter(&strings(&["/a/b"]), &strings(&["docs"]), &none).is_none()
+        );
+    }
+
+    #[test]
+    pub fn descend_filter_paths() {
+        let none: Vec<String> = vec![];
+        let files = strings(&["/src/main.rs", "/etc/conf/secret*", "/root.txt"]);
+        let directories = strings(&["/Documentation", "/x/y*"]);
+        let anchors = build_descend_filter(&files, &directories, &none).unwrap();
+        let descend = |path: &str| anchors.iter().any(|a| a.starts_with(path.as_bytes()));
+
+        for path in ["/src/", "/etc/", "/etc/conf/", "/x/"] {
+            assert!(descend(path), "{path}");
+        }
+        for path in ["/t/", "/src/bin/", "/etc/other/", "/Doc/", "/y/", "/etc/conf/sub/"] {
+            assert!(!descend(path), "{path}");
+        }
+    }
 
     #[test]
     pub fn folder_deletion_patterns() {
