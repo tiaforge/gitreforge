@@ -39,13 +39,16 @@ Wall-clock time to rewrite the full history of a mirror clone, compared with
 
 | Repository | Task | gitreforge | git filter-repo | BFG |
 |:---|:---|---:|---:|---:|
-| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-util/` | **1.5 s** | 2.7 s (1.8×) | 10.3 s (7.0×) |
-| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-*/` (wildcard) | **1.9 s** | 2.4 s (1.3×) | 10.3 s (5.6×) |
-| [git](https://github.com/git/git) (205k commits) | Remove `Documentation/` | **36 s** | 69 s (1.9×) | 88 s (2.4×) |
-| [git](https://github.com/git/git) (205k commits) | Rename an author (7 identities) | **18 s** | 60 s (3.3×) | not supported |
+| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-util/` | **0.26 s** | 2.0 s (7.6×) | 5.1 s (19×) |
+| [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-*/` (wildcard) | **0.27 s** | 2.1 s (7.8×) | 8.6 s (32×) |
+| [git](https://github.com/git/git) (205k commits) | Remove `Documentation/` | **3.5 s** | 69 s (20×) | fails after 94 s¹ |
+| [git](https://github.com/git/git) (205k commits) | Rename an author (7 identities) | **1.4 s** | 61 s (45×) | not supported |
+
+¹ BFG aborts with a `NullPointerException` at 95% of the commits on two old
+tags in git/git that have no `tagger` line, and leaves all refs unchanged.
 
 All tools only rewrite history: no `git gc` or repack, and empty commits are
-kept, so every tool produces the same trees and identities. Measured with
+kept, so every tool that finishes produces the same trees and identities. Measured with
 [hyperfine](https://github.com/sharkdp/hyperfine) on an AMD Ryzen Z2 Extreme
 with NVMe storage. Reproduce with `bench/rewrite.sh <scenario>`; the script
 downloads the other tools and lists the available scenarios.
