@@ -8,11 +8,14 @@ use std::{
     fs::File,
     io::{BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use libdeflater::{CompressionLvl, Compressor, Crc};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::shared::ObjectHash;
 
@@ -29,9 +32,25 @@ struct Inner {
     seen: FxHashSet<ObjectHash>,
 }
 
+/// Last tree written at a path; candidate delta base for the next one
+#[derive(Clone)]
+struct Base {
+    offset: u64,
+    bytes: Arc<[u8]>,
+    depth: u32,
+}
+
+const MAX_DEPTH: u32 = 50;
+
 pub struct PackWriter {
     pack_dir: PathBuf,
     inner: Mutex<Inner>,
+    bases: Mutex<FxHashMap<Box<[u8]>, Base>>,
+    delta: bool,
+    stats_deltas: AtomicU64,
+    stats_full: AtomicU64,
+    stats_raw_bytes: AtomicU64,
+    stats_payload_bytes: AtomicU64,
 }
 
 static WRITER: OnceLock<Option<PackWriter>> = OnceLock::new();
@@ -77,6 +96,12 @@ impl PackWriter {
         file.write_all(b"PACK\0\0\0\x02\0\0\0\0").unwrap();
         Self {
             pack_dir,
+            bases: Mutex::new(FxHashMap::default()),
+            delta: std::env::var_os("GITREFORGE_DELTA").is_some_and(|v| v == "1"),
+            stats_deltas: AtomicU64::new(0),
+            stats_full: AtomicU64::new(0),
+            stats_raw_bytes: AtomicU64::new(0),
+            stats_payload_bytes: AtomicU64::new(0),
             inner: Mutex::new(Inner {
                 file,
                 offset: 12,
@@ -86,16 +111,28 @@ impl PackWriter {
         }
     }
 
-    pub fn add(&self, hash: &ObjectHash, prefix: &str, data: &[u8]) {
+    pub fn add(&self, hash: &ObjectHash, prefix: &str, data: &[u8], delta_path: Option<&[u8]>) {
         if self.inner.lock().unwrap().seen.contains(hash) {
             return;
         }
 
+        let delta_path = delta_path.filter(|_| self.delta);
+        let base = delta_path.and_then(|p| self.bases.lock().unwrap().get(p).cloned());
+        let delta = base
+            .as_ref()
+            .filter(|b| b.depth < MAX_DEPTH)
+            .and_then(|b| encode_tree_delta(&b.bytes, data, data.len() / 2));
+
+        let (type_code, payload) = match &delta {
+            Some(d) => (6u8, &d[..]),
+            None => (type_code(prefix), data),
+        };
+
         COMPRESSOR.with_borrow_mut(|(compressor, buf)| {
             // entry header: type + size varint
             buf.clear();
-            let mut size = data.len();
-            let mut byte = (type_code(prefix) << 4) | (size & 0x0f) as u8;
+            let mut size = payload.len();
+            let mut byte = (type_code << 4) | (size & 0x0f) as u8;
             size >>= 4;
             while size != 0 {
                 buf.push(byte | 0x80);
@@ -105,31 +142,77 @@ impl PackWriter {
             buf.push(byte);
             let header_len = buf.len();
 
-            buf.resize(header_len + compressor.zlib_compress_bound(data.len()), 0);
+            buf.resize(header_len + compressor.zlib_compress_bound(payload.len()), 0);
             let n = compressor
-                .zlib_compress(data, &mut buf[header_len..])
+                .zlib_compress(payload, &mut buf[header_len..])
                 .unwrap();
             buf.truncate(header_len + n);
-
-            let mut crc = Crc::new();
-            crc.update(buf);
 
             let mut inner = self.inner.lock().unwrap();
             if !inner.seen.insert(hash.clone()) {
                 return;
             }
             let offset = inner.offset;
-            inner.file.write_all(buf).unwrap();
-            inner.offset += buf.len() as u64;
+            let ofs = match (&delta, &base) {
+                (Some(_), Some(b)) => encode_ofs(offset - b.offset),
+                _ => Vec::new(),
+            };
+
+            let mut crc = Crc::new();
+            crc.update(&buf[..header_len]);
+            crc.update(&ofs);
+            crc.update(&buf[header_len..]);
+
+            inner.file.write_all(&buf[..header_len]).unwrap();
+            inner.file.write_all(&ofs).unwrap();
+            inner.file.write_all(&buf[header_len..]).unwrap();
+            inner.offset += (buf.len() + ofs.len()) as u64;
             inner.entries.push(Entry {
                 hash: hash.bytes,
                 offset,
                 crc: crc.sum(),
             });
+
+            // still holding the pack lock: the new base is in the file before
+            // anybody can reference its offset
+            if let Some(path) = delta_path {
+                let depth = match (&delta, &base) {
+                    (Some(_), Some(b)) => b.depth + 1,
+                    _ => 0,
+                };
+                self.bases.lock().unwrap().insert(
+                    path.into(),
+                    Base {
+                        offset,
+                        bytes: Arc::from(data),
+                        depth,
+                    },
+                );
+            }
         });
+
+        if delta.is_some() {
+            self.stats_deltas.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.stats_full.fetch_add(1, Ordering::Relaxed);
+        }
+        self.stats_raw_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+        self.stats_payload_bytes.fetch_add(payload.len() as u64, Ordering::Relaxed);
     }
 
     pub fn finish(&self) {
+        if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
+            let bases = self.bases.lock().unwrap();
+            eprintln!(
+                "PACK full={} deltas={} raw_bytes={} payload_bytes={} base_paths={} base_bytes={}",
+                self.stats_full.load(Ordering::Relaxed),
+                self.stats_deltas.load(Ordering::Relaxed),
+                self.stats_raw_bytes.load(Ordering::Relaxed),
+                self.stats_payload_bytes.load(Ordering::Relaxed),
+                bases.len(),
+                bases.values().map(|b| b.bytes.len()).sum::<usize>(),
+            );
+        }
         let mut inner = self.inner.lock().unwrap();
         let count = inner.entries.len() as u32;
         inner.file.flush().unwrap();
@@ -196,4 +279,133 @@ pub fn finish_if_enabled() {
     if let Some(Some(w)) = WRITER.get() {
         w.finish();
     }
+}
+
+/// OFS_DELTA base distance, git's "offset encoding"
+fn encode_ofs(mut distance: u64) -> Vec<u8> {
+    let mut buf = [0u8; 10];
+    let mut pos = buf.len() - 1;
+    buf[pos] = (distance & 0x7f) as u8;
+    distance >>= 7;
+    while distance != 0 {
+        distance -= 1;
+        pos -= 1;
+        buf[pos] = 0x80 | (distance & 0x7f) as u8;
+        distance >>= 7;
+    }
+    buf[pos..].to_vec()
+}
+
+/// Splits raw tree bytes into entries ("<mode> <name>\0<20 byte hash>")
+fn tree_entries(data: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        if pos >= data.len() {
+            return None;
+        }
+        let nul = memchr::memchr(0, &data[pos..]).unwrap() + pos;
+        let entry = (pos, nul + 21);
+        pos = nul + 21;
+        Some(entry)
+    })
+}
+
+fn push_varint(out: &mut Vec<u8>, mut value: usize) {
+    while value >= 0x80 {
+        out.push((value & 0x7f) as u8 | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn push_copy(out: &mut Vec<u8>, mut offset: usize, mut len: usize) {
+    while len > 0 {
+        let chunk = len.min(0x10000);
+        let op_pos = out.len();
+        let mut op = 0x80u8;
+        out.push(0);
+        for i in 0..4 {
+            let b = (offset >> (i * 8)) as u8;
+            if b != 0 {
+                op |= 1 << i;
+                out.push(b);
+            }
+        }
+        if chunk != 0x10000 {
+            for i in 0..3 {
+                let b = (chunk >> (i * 8)) as u8;
+                if b != 0 {
+                    op |= 0x10 << i;
+                    out.push(b);
+                }
+            }
+        }
+        out[op_pos] = op;
+        offset += chunk;
+        len -= chunk;
+    }
+}
+
+fn push_insert(out: &mut Vec<u8>, mut data: &[u8]) {
+    while !data.is_empty() {
+        let chunk = data.len().min(127);
+        out.push(chunk as u8);
+        out.extend_from_slice(&data[..chunk]);
+        data = &data[chunk..];
+    }
+}
+
+/// Entry-level delta between two trees: unchanged entries become copies from
+/// the base (merged while they are contiguous there), everything else is
+/// inserted literally. Gives up once the delta exceeds `max_len`.
+fn encode_tree_delta(base: &[u8], target: &[u8], max_len: usize) -> Option<Vec<u8>> {
+    let mut index: FxHashMap<&[u8], usize> = FxHashMap::default();
+    index.reserve(base.len() / 40);
+    for (start, end) in tree_entries(base) {
+        index.entry(&base[start..end]).or_insert(start);
+    }
+
+    let mut out = Vec::with_capacity(64);
+    push_varint(&mut out, base.len());
+    push_varint(&mut out, target.len());
+
+    let mut copy: Option<(usize, usize)> = None;
+    let mut insert_start: Option<usize> = None;
+    for (start, end) in tree_entries(target) {
+        match index.get(&target[start..end]) {
+            Some(&base_pos) => {
+                if let Some(s) = insert_start.take() {
+                    push_insert(&mut out, &target[s..start]);
+                }
+                copy = match copy {
+                    Some((c_off, c_len)) if c_off + c_len == base_pos => {
+                        Some((c_off, c_len + end - start))
+                    }
+                    other => {
+                        if let Some((c_off, c_len)) = other {
+                            push_copy(&mut out, c_off, c_len);
+                        }
+                        Some((base_pos, end - start))
+                    }
+                };
+            }
+            None => {
+                if let Some((c_off, c_len)) = copy.take() {
+                    push_copy(&mut out, c_off, c_len);
+                }
+                insert_start.get_or_insert(start);
+            }
+        }
+        if out.len() > max_len {
+            return None;
+        }
+    }
+    if let Some((c_off, c_len)) = copy {
+        push_copy(&mut out, c_off, c_len);
+    }
+    if let Some(s) = insert_start {
+        push_insert(&mut out, &target[s..]);
+    }
+
+    (out.len() <= max_len).then_some(out)
 }

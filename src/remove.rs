@@ -153,7 +153,7 @@ fn update_tree<T: BuildHasher + Sync + Send>(
     should_delete_folder: &DynFn,
     should_remove: &DynFn2,
     rewritten_trees: &RwLock<HashMap<TreeHash, Option<TreeHash>, T>>,
-    write_tree: &(impl Fn(Tree) + Sync + Send),
+    write_tree: &(impl Fn(Tree, &[u8]) + Sync + Send),
 ) -> Option<TreeHash> {
     if let Some(rewritten_hash_option) = rewritten_trees.read().unwrap().get(&tree_hash) {
         return rewritten_hash_option.clone();
@@ -217,7 +217,7 @@ fn update_tree<T: BuildHasher + Sync + Send>(
             .write()
             .unwrap()
             .insert(old_hash.clone(), Some(new_hash.clone()));
-        write_tree(tree);
+        write_tree(tree, path);
         Some(new_hash)
     }
 }
@@ -328,10 +328,14 @@ pub fn remove(
                     &folder_delete_patterns,
                     &should_remove_line,
                     &rewritten_trees,
-                    &|tree| {
+                    &|tree, path| {
                         if !dry_run {
                             // TODO write out on different thread
-                            Repository::write(repository_path.clone(), tree.into(), dry_run);
+                            Repository::write(
+                                repository_path.clone(),
+                                WriteObject::from(tree).with_delta_path(path),
+                                dry_run,
+                            );
                         }
                     },
                 );

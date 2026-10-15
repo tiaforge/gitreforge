@@ -62,6 +62,15 @@ pub struct WriteObject {
     pub hash: ObjectHash,
     prefix: String,
     bytes: WriteBytes,
+    delta_path: Option<Box<[u8]>>,
+}
+
+impl WriteObject {
+    /// PROTOTYPE: path of a tree, used to pick a delta base in the pack writer
+    pub fn with_delta_path(mut self, path: &[u8]) -> Self {
+        self.delta_path = Some(path.into());
+        self
+    }
 }
 
 impl From<CommitEditable> for WriteObject {
@@ -71,6 +80,7 @@ impl From<CommitEditable> for WriteObject {
             hash: calculate_hash(&wb.bytes, b"commit"),
             prefix: String::from("commit"),
             bytes: wb,
+            delta_path: None,
         }
     }
 }
@@ -81,6 +91,7 @@ impl From<Tag> for WriteObject {
             hash: value.hash().clone(),
             prefix: String::from("tag"),
             bytes: value.bytes(),
+            delta_path: None,
         }
     }
 }
@@ -91,6 +102,7 @@ impl From<Tree> for WriteObject {
             hash: value.hash().0.clone(),
             prefix: String::from("tree"),
             bytes: value.bytes(),
+            delta_path: None,
         }
     }
 }
@@ -129,7 +141,12 @@ impl Repository {
         }
 
         if let Some(writer) = pack_writer::get(&repo_path) {
-            writer.add(&object.hash, &object.prefix, object.bytes.get_bytes());
+            writer.add(
+                &object.hash,
+                &object.prefix,
+                object.bytes.get_bytes(),
+                object.delta_path.as_deref(),
+            );
             return;
         }
 
