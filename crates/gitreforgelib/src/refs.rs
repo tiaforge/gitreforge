@@ -198,6 +198,11 @@ impl GitRef {
                 TagTargetType::Tree | TagTargetType::Blob => {
                     let target_tag_hash = target_tag.hash().clone();
                     Repository::write(repository.path.clone(), target_tag.into(), dry_run);
+                    Self::write_ref(
+                        repository.path.to_str().unwrap(),
+                        ref_name.to_str().unwrap(),
+                        target_tag_hash.to_string().as_str(),
+                    );
                     target_tag_hash
                 }
             },

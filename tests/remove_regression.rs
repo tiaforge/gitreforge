@@ -227,3 +227,32 @@ fn remove_absolute_file_only_matches_its_own_path() -> Result<(), Box<dyn std::e
     }
     Ok(())
 }
+
+#[test]
+fn remove_keeps_tags_pointing_to_blobs() -> Result<(), Box<dyn std::error::Error>> {
+    let repo = TestRepo::create("blob-tag")?;
+    fs::write(repo.work.join("secret.txt"), "secret\n")?;
+    run(Command::new("git")
+        .args(["add", "secret.txt"])
+        .current_dir(&repo.work))?;
+    repo.commit_file("one\n", "one")?;
+    run(Command::new("git")
+        .args(["tag", "-a", "key", "-m", "a blob", "HEAD:keep.txt"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["push", "origin", "key"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["pack-refs", "--all"])
+        .current_dir(&repo.bare))?;
+    let tag = git_output(&repo.bare, &["rev-parse", "key"])?;
+
+    run(Command::new(env!("CARGO_BIN_EXE_gitreforge"))
+        .arg(&repo.bare)
+        .args(["remove", "--file", "secret.txt"])
+        .current_dir(&repo.root))?;
+
+    assert_eq!(git_output(&repo.bare, &["rev-parse", "key"])?, tag);
+    assert_eq!(git_output(&repo.bare, &["cat-file", "-t", "key^{}"])?, "blob");
+    Ok(())
+}
