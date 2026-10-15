@@ -18,6 +18,8 @@ use crate::{
     Repository,
 };
 
+static PACKED: std::sync::Mutex<Option<Vec<(String, String)>>> = std::sync::Mutex::new(None);
+
 trait RefName {
     fn get_name(&self) -> &BStr;
     fn get_target(&self) -> &BStr;
@@ -88,6 +90,10 @@ impl GitRef {
         rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
         dry_run: bool,
     ) {
+        let packed = std::env::var_os("GITREFORGE_PACKED_REFS").is_some();
+        if packed {
+            *PACKED.lock().unwrap() = Some(Vec::new());
+        }
         for r in repository.refs().unwrap() {
             Self::rewrite_ref(
                 repository,
@@ -100,12 +106,36 @@ impl GitRef {
 
         let mut path = repository.path.clone();
         path.push("packed-refs");
+        if packed {
+            // PROTOTYPE: one packed-refs file instead of one loose file per ref
+            let mut refs = PACKED.lock().unwrap().take().unwrap();
+            refs.sort();
+            let mut out = String::from("# pack-refs with: sorted \n");
+            for (name, target) in refs {
+                let loose = repository.path.join(&name);
+                if loose.is_file() {
+                    std::fs::remove_file(loose).unwrap();
+                }
+                out.push_str(&target);
+                out.push(' ');
+                out.push_str(&name);
+                out.push('\n');
+            }
+            let tmp = repository.path.join("packed-refs.new");
+            std::fs::write(&tmp, out).unwrap();
+            std::fs::rename(tmp, path).unwrap();
+            return;
+        }
         if path.exists() {
             std::fs::remove_file(path).unwrap();
         }
     }
 
     fn write_ref(repository_path: &str, ref_name: &str, ref_target: &str) {
+        if let Some(refs) = PACKED.lock().unwrap().as_mut() {
+            refs.push((ref_name.to_owned(), ref_target.to_owned()));
+            return;
+        }
         let path: PathBuf = [repository_path, ref_name].iter().collect();
 
         let file_name = path.file_name().unwrap();

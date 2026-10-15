@@ -259,6 +259,7 @@ pub fn remove(
     let rewritten_trees: RwLock<HashMap<TreeHash, Option<TreeHash>, _>> =
         RwLock::new(FxHashMap::default());
 
+    let t0 = std::time::Instant::now();
     let mut repository = rayon::scope(|scope| {
         let (tx, rx) = channel::<OrderedCommit>();
         scope.spawn(|_| {
@@ -343,8 +344,14 @@ pub fn remove(
         repository
     });
 
+    let t1 = std::time::Instant::now();
     repository.update_refs(&rewritten_commits, dry_run);
+    let t2 = std::time::Instant::now();
     Repository::write_rewritten_commits_file(rewritten_commits, dry_run);
+    let t3 = std::time::Instant::now();
+    if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
+        eprintln!("TIMING rewrite={:.3} refs+finish={:.3} mapfile={:.3}", (t1 - t0).as_secs_f64(), (t2 - t1).as_secs_f64(), (t3 - t2).as_secs_f64());
+    }
 }
 
 fn update_commit(

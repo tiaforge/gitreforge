@@ -23,6 +23,7 @@ mod compression;
 // pub mod ffi;
 mod idx_reader;
 mod pack_diff;
+pub mod pack_writer;
 mod packreader;
 mod refs;
 mod shared;
@@ -127,6 +128,11 @@ impl Repository {
             return;
         }
 
+        if let Some(writer) = pack_writer::get(&repo_path) {
+            writer.add(&object.hash, &object.prefix, object.bytes.get_bytes());
+            return;
+        }
+
         let hash = object.hash.to_string();
         let data = object.bytes;
         let prefix = object.prefix;
@@ -186,7 +192,13 @@ impl Repository {
         dry_run: bool,
     ) {
         if !dry_run {
+            let t = std::time::Instant::now();
             refs::GitRef::update(self, rewritten_commits, dry_run);
+            let t2 = std::time::Instant::now();
+            pack_writer::finish_if_enabled();
+            if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
+                eprintln!("TIMING refs={:.3} pack_finish={:.3}", (t2 - t).as_secs_f64(), t2.elapsed().as_secs_f64());
+            }
         }
     }
 
