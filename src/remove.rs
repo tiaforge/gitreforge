@@ -17,6 +17,7 @@ use gitreforgelib::{
 use rayon::prelude::*;
 use regex::bytes::RegexSet;
 use rustc_hash::{FxBuildHasher, FxHashMap};
+use smallvec::SmallVec;
 
 use crate::signing::SigningPolicy;
 
@@ -193,33 +194,79 @@ fn build_descend_pattern<'a>(
     }
 }
 
+/// Whether removing with these patterns can treat the same tree differently
+/// depending on where it sits. Only patterns that look at nothing but the
+/// last path component (a file name, or a directory name without slashes)
+/// give the same result for a tree at every path.
+fn patterns_depend_on_path(files: &[String], directories: &[String], regexes: &[String]) -> bool {
+    if !regexes.is_empty() {
+        return true;
+    }
+
+    let file_depends = |file: &String| file.contains('/');
+    let directory_depends = |folder: &String| {
+        if folder.ends_with('*') && !folder.starts_with('*') || folder.starts_with('/') {
+            return true;
+        }
+        let name = folder.trim_start_matches('*').trim_end_matches('/');
+        name.contains('/')
+    };
+
+    files.iter().any(file_depends) || directories.iter().any(directory_depends)
+}
+
+type RewrittenEntries = SmallVec<[(Box<[u8]>, Option<TreeHash>); 1]>;
+
 /// Old tree hash to its rewritten hash (None: unchanged), sharded by the
 /// first hash byte so that the worker threads rarely contend on a lock.
+///
+/// The same tree can appear at several paths (moved directories, merged
+/// subprojects). When the patterns depend on the path, each path gets its
+/// own entry, otherwise the result for the first path would be reused for
+/// the others.
 pub(crate) struct RewrittenTrees {
-    shards: Vec<RwLock<FxHashMap<TreeHash, Option<TreeHash>>>>,
+    shards: Vec<RwLock<FxHashMap<TreeHash, RewrittenEntries>>>,
+    path_dependent: bool,
 }
 
 impl RewrittenTrees {
     const SHARDS: usize = 64;
 
-    fn new() -> Self {
+    fn new(path_dependent: bool) -> Self {
         Self {
             shards: (0..Self::SHARDS)
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
+            path_dependent,
         }
     }
 
-    fn shard(&self, hash: &TreeHash) -> &RwLock<FxHashMap<TreeHash, Option<TreeHash>>> {
+    fn shard(&self, hash: &TreeHash) -> &RwLock<FxHashMap<TreeHash, RewrittenEntries>> {
         &self.shards[hash.as_bytes()[0] as usize % Self::SHARDS]
     }
 
-    fn get(&self, hash: &TreeHash) -> Option<Option<TreeHash>> {
-        self.shard(hash).read().unwrap().get(hash).cloned()
+    fn key<'a>(&self, path: &'a [u8]) -> &'a [u8] {
+        if self.path_dependent { path } else { b"" }
     }
 
-    fn insert(&self, old: TreeHash, new: Option<TreeHash>) {
-        self.shard(&old).write().unwrap().insert(old, new);
+    fn get(&self, hash: &TreeHash, path: &[u8]) -> Option<Option<TreeHash>> {
+        let key = self.key(path);
+        self.shard(hash)
+            .read()
+            .unwrap()
+            .get(hash)?
+            .iter()
+            .find(|(p, _)| &**p == key)
+            .map(|(_, new)| new.clone())
+    }
+
+    fn insert(&self, old: TreeHash, path: &[u8], new: Option<TreeHash>) {
+        let key = self.key(path);
+        let mut shard = self.shard(&old).write().unwrap();
+        let entries = shard.entry(old).or_default();
+        if !entries.iter().any(|(p, _)| &**p == key) {
+            entries.push((key.into(), new));
+        }
     }
 }
 
@@ -236,7 +283,7 @@ fn update_tree(
     rewritten_trees: &RewrittenTrees,
     write_tree: &(impl Fn(Tree, &[u8]) + Sync + Send),
 ) -> Option<TreeHash> {
-    if let Some(rewritten_hash_option) = rewritten_trees.get(&tree_hash) {
+    if let Some(rewritten_hash_option) = rewritten_trees.get(&tree_hash, path) {
         return rewritten_hash_option;
     }
 
@@ -296,13 +343,13 @@ fn update_tree(
 
     match filtered_lines {
         None => {
-            rewritten_trees.insert(old_hash.clone(), None);
+            rewritten_trees.insert(old_hash.clone(), path, None);
             None
         }
         Some(lines) => {
             let new_tree: Tree = lines.into_iter().collect();
             let new_hash = new_tree.hash().clone();
-            rewritten_trees.insert(old_hash.clone(), Some(new_hash.clone()));
+            rewritten_trees.insert(old_hash.clone(), path, Some(new_hash.clone()));
             write_tree(new_tree, path);
             Some(new_hash)
         }
@@ -343,7 +390,8 @@ pub fn remove(
     signing_policy: &SigningPolicy,
 ) {
     let mut rewritten_commits: HashMap<CommitHash, CommitHash, _> = FxHashMap::default();
-    let rewritten_trees = RewrittenTrees::new();
+    let rewritten_trees =
+        RewrittenTrees::new(patterns_depend_on_path(&files, &directories, &regexes));
 
     let t0 = std::time::Instant::now();
     let mut repository = rayon::scope(|scope| {
@@ -458,7 +506,7 @@ fn update_commit(
 
     update_parents(&mut commit, rewritten_commits);
     // update tree
-    if let Some(Some(new_tree_hash)) = rewritten_trees.get(&commit.tree()) {
+    if let Some(Some(new_tree_hash)) = rewritten_trees.get(&commit.tree(), b"/") {
         commit.set_tree(new_tree_hash);
     }
 
@@ -491,7 +539,25 @@ fn update_parents(
 
 #[cfg(test)]
 mod test {
-    use super::{build_descend_filter, build_folder_delete_patterns};
+    use super::{build_descend_filter, build_folder_delete_patterns, patterns_depend_on_path};
+
+    #[test]
+    pub fn path_dependent_patterns() {
+        let none: Vec<String> = vec![];
+        for files in [&["*.zip"][..], &["secret*"], &["passwords.txt"]] {
+            assert!(!patterns_depend_on_path(&strings(files), &none, &none), "{files:?}");
+        }
+        for directories in [&["docs"][..], &["*build"], &["*build/"], &["bin/"]] {
+            assert!(!patterns_depend_on_path(&none, &strings(directories), &none), "{directories:?}");
+        }
+        for files in [&["/Makefile"][..], &["*bin/test.txt"], &["/a/b*"]] {
+            assert!(patterns_depend_on_path(&strings(files), &none, &none), "{files:?}");
+        }
+        for directories in [&["/docs"][..], &["bin/debug"], &["*my/directory"], &["/x/y*"]] {
+            assert!(patterns_depend_on_path(&none, &strings(directories), &none), "{directories:?}");
+        }
+        assert!(patterns_depend_on_path(&none, &none, &strings(&["x"])));
+    }
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
@@ -606,3 +672,4 @@ mod test {
         assert!(!should_delete(b"/hello/world", b"1test.txt"));
     }
 }
+

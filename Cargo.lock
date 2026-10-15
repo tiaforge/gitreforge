@@ -432,6 +432,7 @@ dependencies = [
  "rayon",
  "regex",
  "rustc-hash",
+ "smallvec",
  "ssh-key",
 ]
 

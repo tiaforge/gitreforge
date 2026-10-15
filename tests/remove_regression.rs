@@ -166,3 +166,64 @@ fn remove_rewrites_tag_pointing_to_tag() -> Result<(), Box<dyn std::error::Error
     );
     Ok(())
 }
+
+/// The same tree at two paths: the first commit has `Makefile` at the root,
+/// the second moves everything into `sub/`, so the old root tree becomes
+/// `sub/`. Absolute patterns must only match at their own path.
+fn create_moved_tree_repo(name: &str) -> Result<TestRepo, Box<dyn std::error::Error>> {
+    let repo = TestRepo::create(name)?;
+    fs::write(repo.work.join("Makefile"), "all:\n")?;
+    run(Command::new("git")
+        .args(["add", "Makefile"])
+        .current_dir(&repo.work))?;
+    repo.commit_file("one\n", "one")?;
+
+    fs::create_dir(repo.work.join("sub"))?;
+    run(Command::new("git")
+        .args(["mv", "Makefile", "keep.txt", "sub/"])
+        .current_dir(&repo.work))?;
+    fs::write(repo.work.join("top.txt"), "top\n")?;
+    run(Command::new("git")
+        .args(["add", "top.txt"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["commit", "-m", "move"])
+        .current_dir(&repo.work))?;
+    run(Command::new("git")
+        .args(["push", "origin", "HEAD:main"])
+        .current_dir(&repo.work))?;
+
+    assert_eq!(
+        git_output(&repo.bare, &["rev-parse", "main~1^{tree}"])?,
+        git_output(&repo.bare, &["rev-parse", "main:sub"])?
+    );
+    Ok(repo)
+}
+
+fn files_at(repo: &Path, rev: &str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(git_output(repo, &["ls-tree", "-r", "--name-only", rev])?.replace('\n', " "))
+}
+
+#[test]
+fn remove_absolute_file_only_matches_its_own_path() -> Result<(), Box<dyn std::error::Error>> {
+    for no_prune in [false, true] {
+        for (pattern, first, second) in [
+            ("/Makefile", "keep.txt", "sub/Makefile sub/keep.txt top.txt"),
+            ("/sub/Makefile", "Makefile keep.txt", "sub/keep.txt top.txt"),
+        ] {
+            let repo = create_moved_tree_repo("moved-tree")?;
+            let mut command = Command::new(env!("CARGO_BIN_EXE_gitreforge"));
+            if no_prune {
+                command.env("GITREFORGE_NO_PRUNE", "1");
+            }
+            run(command
+                .arg(&repo.bare)
+                .args(["remove", "--file", pattern])
+                .current_dir(&repo.root))?;
+
+            assert_eq!(files_at(&repo.bare, "main~1")?, first, "{pattern} {no_prune}");
+            assert_eq!(files_at(&repo.bare, "main")?, second, "{pattern} {no_prune}");
+        }
+    }
+    Ok(())
+}
