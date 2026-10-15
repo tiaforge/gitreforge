@@ -1,6 +1,5 @@
 use core::panic;
 use std::{
-    borrow::Cow,
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
     ops::Deref,
@@ -12,7 +11,7 @@ use bstr::ByteSlice;
 
 use gitreforgelib::{
     Repository, WriteObject,
-    objs::{CommitBase, CommitEditable, CommitHash, Tree, TreeHash},
+    objs::{CommitBase, CommitEditable, CommitHash, Tree, TreeEdit, TreeHash},
 };
 use rayon::prelude::*;
 use regex::bytes::RegexSet;
@@ -294,10 +293,9 @@ fn update_tree(
 
     let old_hash = tree.hash();
 
-    // only collected once the first line changes
-    let mut filtered_lines: Option<Vec<_>> = None;
-    for (index, mut line) in tree.lines().enumerate() {
-        let mut changed = false;
+    // only started once the first line changes
+    let mut edit: Option<TreeEdit> = None;
+    for (index, line) in tree.lines().enumerate() {
         if line.is_tree() {
             let path_len = path.len();
             path.extend_from_slice(line.filename());
@@ -305,7 +303,7 @@ fn update_tree(
 
             if should_delete_folder(path) {
                 path.truncate(path_len);
-                changed = true;
+                edit.get_or_insert_with(|| TreeEdit::new(&tree)).remove(index);
             } else if !should_descend(path) {
                 path.truncate(path_len);
             } else {
@@ -322,32 +320,23 @@ fn update_tree(
                 );
                 path.truncate(path_len);
                 if let Some(new_tree_hash) = new_tree_hash {
-                    line.hash = Cow::Owned(new_tree_hash);
-                    filtered_lines
-                        .get_or_insert_with(|| tree.lines().take(index).collect())
-                        .push(line);
-                    continue;
+                    edit.get_or_insert_with(|| TreeEdit::new(&tree))
+                        .replace_hash(index, &new_tree_hash);
                 }
             }
         } else if should_delete_file(path, line.filename()) || should_remove(path, line.filename())
         {
-            changed = true;
-        }
-
-        if changed {
-            filtered_lines.get_or_insert_with(|| tree.lines().take(index).collect());
-        } else if let Some(lines) = filtered_lines.as_mut() {
-            lines.push(line);
+            edit.get_or_insert_with(|| TreeEdit::new(&tree)).remove(index);
         }
     }
 
-    match filtered_lines {
+    match edit {
         None => {
             rewritten_trees.insert(old_hash.clone(), path, None);
             None
         }
-        Some(lines) => {
-            let new_tree: Tree = lines.into_iter().collect();
+        Some(edit) => {
+            let new_tree = edit.finish();
             let new_hash = new_tree.hash().clone();
             rewritten_trees.insert(old_hash.clone(), path, Some(new_hash.clone()));
             write_tree(new_tree, path);

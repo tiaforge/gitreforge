@@ -4,6 +4,7 @@ use crate::{
 };
 
 use self::tree::TreeLineIndex;
+pub use self::tree::TreeEdit;
 
 mod commit;
 mod tag;

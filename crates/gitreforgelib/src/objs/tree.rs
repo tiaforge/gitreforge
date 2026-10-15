@@ -31,6 +31,7 @@ impl Tree {
             lines.push(TreeLineIndex {
                 hash: tree_hash,
                 text,
+                start: position - null_terminator_index - 21,
             });
         }
 
@@ -116,6 +117,68 @@ impl<'a> Display for TreeLine<'a> {
 pub struct TreeLineIndex {
     hash: TreeHash,
     text: shared::RefSlice<u8>,
+    /// offset of the entry in the tree's bytes
+    start: usize,
+}
+
+impl TreeLineIndex {
+    fn end(&self) -> usize {
+        self.hash_start() + 20
+    }
+
+    fn hash_start(&self) -> usize {
+        self.end_of_text() + 1
+    }
+
+    fn end_of_text(&self) -> usize {
+        match &self.text {
+            shared::RefSlice::Referenced(indexes) => indexes.end(),
+            shared::RefSlice::Owned(_) => unreachable!("tree lines reference the tree's bytes"),
+        }
+    }
+}
+
+/// Builds a modified copy of a tree by removing entries or replacing their
+/// hashes, copying the unchanged bytes in between as whole ranges. Edits
+/// must be made in entry order.
+pub struct TreeEdit<'a> {
+    tree: &'a Tree,
+    bytes: Vec<u8>,
+    copied_to: usize,
+}
+
+impl<'a> TreeEdit<'a> {
+    pub fn new(tree: &'a Tree) -> Self {
+        Self {
+            tree,
+            bytes: Vec::with_capacity(tree.bytes.len() - tree.bytes_start),
+            copied_to: tree.bytes_start,
+        }
+    }
+
+    fn copy_until(&mut self, position: usize) {
+        self.bytes
+            .extend_from_slice(&self.tree.bytes[self.copied_to..position]);
+    }
+
+    pub fn remove(&mut self, index: usize) {
+        let line = &self.tree.lines[index];
+        self.copy_until(line.start);
+        self.copied_to = line.end();
+    }
+
+    pub fn replace_hash(&mut self, index: usize, hash: &TreeHash) {
+        let line = &self.tree.lines[index];
+        self.copy_until(line.hash_start());
+        self.bytes.extend_from_slice(hash.as_bytes());
+        self.copied_to = line.end();
+    }
+
+    pub fn finish(mut self) -> Tree {
+        self.copy_until(self.tree.bytes.len());
+        let object_hash = TreeHash(crate::calculate_hash(&self.bytes, b"tree"));
+        Tree::create(object_hash, self.bytes.into_boxed_slice(), false)
+    }
 }
 
 impl TreeHash {
@@ -159,5 +222,59 @@ impl Display for Tree {
             writeln!(f, "{} {}", line.hash, text)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::borrow::Cow;
+
+    use bstr::ByteSlice;
+
+    use super::{Tree, TreeEdit, TreeHash, TreeLine};
+    use crate::shared::ObjectHash;
+
+    fn hash(byte: u8) -> TreeHash {
+        TreeHash(ObjectHash::from([byte; 20]))
+    }
+
+    fn tree(entries: &[(&str, u8)]) -> Tree {
+        entries
+            .iter()
+            .map(|(text, byte)| TreeLine {
+                hash: Cow::Owned(hash(*byte)),
+                text: text.as_bytes().as_bstr(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn edit_matches_rebuilt_tree() {
+        let original = tree(&[
+            ("100644 a.txt", 1),
+            ("40000 dir", 2),
+            ("100644 m.txt", 3),
+            ("40000 sub", 4),
+            ("100644 z.txt", 5),
+        ]);
+
+        let mut edit = TreeEdit::new(&original);
+        edit.remove(0);
+        edit.replace_hash(1, &hash(9));
+        edit.remove(3);
+        let edited = edit.finish();
+
+        let expected = tree(&[("40000 dir", 9), ("100644 m.txt", 3), ("100644 z.txt", 5)]);
+        assert_eq!(edited.hash(), expected.hash());
+        assert_eq!(edited.lines().count(), 3);
+    }
+
+    #[test]
+    fn edit_can_remove_everything() {
+        let original = tree(&[("100644 a.txt", 1), ("40000 dir", 2)]);
+        let mut edit = TreeEdit::new(&original);
+        edit.remove(0);
+        edit.remove(1);
+        assert_eq!(edit.finish().hash(), tree(&[]).hash());
     }
 }

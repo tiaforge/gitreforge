@@ -31,6 +31,10 @@ impl SliceIndexes {
         SliceIndexes { position, len }
     }
 
+    pub fn end(&self) -> usize {
+        self.position + self.len
+    }
+
     pub fn get<T>(&self, data: &[T]) -> &[T] {
         unsafe { std::slice::from_raw_parts(data.as_ptr().add(self.position), self.len) }
     }
