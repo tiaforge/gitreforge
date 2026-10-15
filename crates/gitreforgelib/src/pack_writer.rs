@@ -4,7 +4,7 @@
 //! the last tree written at the same path when that's smaller.
 //!
 //! `GITREFORGE_PACK=0` writes loose objects instead, `GITREFORGE_DELTA=0`
-//! stores every tree whole, `GITREFORGE_LEVEL` sets the zlib level (6).
+//! stores every tree whole, `GITREFORGE_LEVEL` sets the zlib level (1).
 
 use std::{
     cell::RefCell,
@@ -67,7 +67,9 @@ pub(crate) fn compression_level() -> CompressionLvl {
     let lvl = std::env::var("GITREFORGE_LEVEL")
         .ok()
         .and_then(|l| l.parse().ok())
-        .unwrap_or(6);
+        // most of the pack is delta data, which level 1 compresses about as
+        // well as higher levels, in less time
+        .unwrap_or(1);
     CompressionLvl::new(lvl).unwrap()
 }
 
