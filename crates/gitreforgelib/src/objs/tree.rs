@@ -12,32 +12,26 @@ use super::{ObjectHash, Tree, TreeHash};
 impl Tree {
     pub fn create(object_hash: TreeHash, bytes: Box<[u8]>, skip_first_null: bool) -> Tree {
         let start_index = if skip_first_null {
-            bytes.iter().position(|x| *x == b'\0').unwrap() + 1
+            memchr::memchr(0, &bytes).unwrap() + 1
         } else {
             0
         };
 
         let mut position = start_index;
+        // entries are at least 28 bytes: "40000 x\0" + 20 byte hash
+        let mut lines = Vec::with_capacity((bytes.len() - start_index) / 28);
 
-        let mut null_terminator_index_opt = bytes[position..].iter().position(|x| *x == b'\0');
-        let mut lines = Vec::new();
-
-        while let Some(null_terminator_index) = null_terminator_index_opt {
+        while let Some(null_terminator_index) = memchr::memchr(0, &bytes[position..]) {
             let text = RefSlice::new(position, null_terminator_index);
+            let hash_start = position + null_terminator_index + 1;
+            let tree_hash: TreeHash = bytes[hash_start..hash_start + 20].try_into().unwrap();
 
-            let tree_hash: TreeHash = bytes
-                [position + null_terminator_index + 1..position + null_terminator_index + 21]
-                .try_into()
-                .unwrap();
-
-            position += null_terminator_index + 21;
+            position = hash_start + 20;
 
             lines.push(TreeLineIndex {
                 hash: tree_hash,
                 text,
             });
-
-            null_terminator_index_opt = bytes[position..].iter().position(|x| *x == b'\0');
         }
 
         Tree {
@@ -91,7 +85,7 @@ impl<'a> TreeLine<'a> {
     }
 
     pub fn filename(&self) -> &[u8] {
-        let seperator_index = self.text.iter().position(|c| *c == b' ').unwrap();
+        let seperator_index = memchr::memchr(b' ', self.text).unwrap();
         &self.text[seperator_index + 1..]
     }
 }
@@ -122,6 +116,12 @@ impl<'a> Display for TreeLine<'a> {
 pub struct TreeLineIndex {
     hash: TreeHash,
     text: shared::RefSlice<u8>,
+}
+
+impl TreeHash {
+    pub fn as_bytes(&self) -> &[u8; 20] {
+        &self.0.bytes
+    }
 }
 
 impl Display for TreeHash {

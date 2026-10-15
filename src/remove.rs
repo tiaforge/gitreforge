@@ -3,7 +3,6 @@ use std::{
     borrow::Cow,
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
-    hash::BuildHasher,
     ops::Deref,
     path::{Path, PathBuf},
     sync::{RwLock, mpsc::channel},
@@ -145,18 +144,50 @@ fn build_file_delete_patterns(files: &[String]) -> DynFn2<'_> {
     delete_file
 }
 
-fn update_tree<T: BuildHasher + Sync + Send>(
+/// Old tree hash to its rewritten hash (None: unchanged), sharded by the
+/// first hash byte so that the worker threads rarely contend on a lock.
+pub(crate) struct RewrittenTrees {
+    shards: Vec<RwLock<FxHashMap<TreeHash, Option<TreeHash>>>>,
+}
+
+impl RewrittenTrees {
+    const SHARDS: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            shards: (0..Self::SHARDS)
+                .map(|_| RwLock::new(FxHashMap::default()))
+                .collect(),
+        }
+    }
+
+    fn shard(&self, hash: &TreeHash) -> &RwLock<FxHashMap<TreeHash, Option<TreeHash>>> {
+        &self.shards[hash.as_bytes()[0] as usize % Self::SHARDS]
+    }
+
+    fn get(&self, hash: &TreeHash) -> Option<Option<TreeHash>> {
+        self.shard(hash).read().unwrap().get(hash).cloned()
+    }
+
+    fn insert(&self, old: TreeHash, new: Option<TreeHash>) {
+        self.shard(&old).write().unwrap().insert(old, new);
+    }
+}
+
+/// `path` is the tree's path with a trailing slash; it's used as a scratch
+/// buffer for the subtree paths and restored before returning.
+fn update_tree(
     tree_hash: TreeHash,
-    path: &[u8],
+    path: &mut Vec<u8>,
     repository: &mut Repository,
     should_delete_file: &DynFn2,
     should_delete_folder: &DynFn,
     should_remove: &DynFn2,
-    rewritten_trees: &RwLock<HashMap<TreeHash, Option<TreeHash>, T>>,
+    rewritten_trees: &RewrittenTrees,
     write_tree: &(impl Fn(Tree, &[u8]) + Sync + Send),
 ) -> Option<TreeHash> {
-    if let Some(rewritten_hash_option) = rewritten_trees.read().unwrap().get(&tree_hash) {
-        return rewritten_hash_option.clone();
+    if let Some(rewritten_hash_option) = rewritten_trees.get(&tree_hash) {
+        return rewritten_hash_option;
     }
 
     let tree: Tree = match repository.read_object(tree_hash.into()).unwrap() {
@@ -166,59 +197,62 @@ fn update_tree<T: BuildHasher + Sync + Send>(
 
     let old_hash = tree.hash();
 
-    let mut filtered_lines = vec![];
-    let mut tree_changed = false;
-    for mut line in tree.lines() {
+    // only collected once the first line changes
+    let mut filtered_lines: Option<Vec<_>> = None;
+    for (index, mut line) in tree.lines().enumerate() {
+        let mut changed = false;
         if line.is_tree() {
-            let full_path = [path, line.filename(), b"/"].concat();
+            let path_len = path.len();
+            path.extend_from_slice(line.filename());
+            path.push(b'/');
 
-            if should_delete_folder(&full_path) {
-                tree_changed = true;
-                continue;
+            if should_delete_folder(path) {
+                path.truncate(path_len);
+                changed = true;
+            } else {
+                let new_tree_hash = update_tree(
+                    line.hash.deref().clone(),
+                    path,
+                    repository,
+                    should_delete_file,
+                    should_delete_folder,
+                    should_remove,
+                    rewritten_trees,
+                    write_tree,
+                );
+                path.truncate(path_len);
+                if let Some(new_tree_hash) = new_tree_hash {
+                    line.hash = Cow::Owned(new_tree_hash);
+                    filtered_lines
+                        .get_or_insert_with(|| tree.lines().take(index).collect())
+                        .push(line);
+                    continue;
+                }
             }
-
-            if let Some(new_tree_hash) = update_tree(
-                line.hash.deref().clone(),
-                &full_path,
-                repository,
-                should_delete_file,
-                should_delete_folder,
-                should_remove,
-                rewritten_trees,
-                write_tree,
-            ) {
-                tree_changed = true;
-                line.hash = Cow::Owned(new_tree_hash);
-            }
-        } else {
-            if should_delete_file(path, line.filename()) {
-                tree_changed = true;
-                continue;
-            }
-            if should_remove(path, line.filename()) {
-                tree_changed = true;
-                continue;
-            }
+        } else if should_delete_file(path, line.filename()) || should_remove(path, line.filename())
+        {
+            changed = true;
         }
 
-        filtered_lines.push(line);
+        if changed {
+            filtered_lines.get_or_insert_with(|| tree.lines().take(index).collect());
+        } else if let Some(lines) = filtered_lines.as_mut() {
+            lines.push(line);
+        }
     }
 
-    if !tree_changed {
-        rewritten_trees
-            .write()
-            .unwrap()
-            .insert(old_hash.clone(), None);
-        None
-    } else {
-        let tree: Tree = filtered_lines.into_iter().collect();
-        let new_hash = tree.hash().clone();
-        rewritten_trees
-            .write()
-            .unwrap()
-            .insert(old_hash.clone(), Some(new_hash.clone()));
-        write_tree(tree, path);
-        Some(new_hash)
+    match filtered_lines {
+        None => {
+            rewritten_trees.insert(old_hash.clone(), None);
+            None
+        }
+        Some(lines) => {
+            let new_tree: Tree = lines.into_iter().collect();
+            let new_hash = new_tree.hash().clone();
+            rewritten_trees.insert(old_hash.clone(), Some(new_hash.clone()));
+            write_tree(new_tree, path);
+            Some(new_hash)
+        }
     }
 }
 
@@ -256,8 +290,7 @@ pub fn remove(
     signing_policy: &SigningPolicy,
 ) {
     let mut rewritten_commits: HashMap<CommitHash, CommitHash, _> = FxHashMap::default();
-    let rewritten_trees: RwLock<HashMap<TreeHash, Option<TreeHash>, _>> =
-        RwLock::new(FxHashMap::default());
+    let rewritten_trees = RewrittenTrees::new();
 
     let t0 = std::time::Instant::now();
     let mut repository = rayon::scope(|scope| {
@@ -322,7 +355,7 @@ pub fn remove(
                 let old_tree_hash = commit.commit.tree();
                 update_tree(
                     old_tree_hash,
-                    b"/",
+                    &mut b"/".to_vec(),
                     repository,
                     &file_delete_patterns,
                     &folder_delete_patterns,
@@ -362,7 +395,7 @@ fn update_commit(
     repo_path: &Path,
     mut commit: CommitEditable,
     rewritten_commits: &HashMap<CommitHash, CommitHash, FxBuildHasher>,
-    rewritten_trees: &RwLock<HashMap<TreeHash, Option<TreeHash>, FxBuildHasher>>,
+    rewritten_trees: &RewrittenTrees,
     dry_run: bool,
     signing_policy: &SigningPolicy,
 ) -> (CommitHash, CommitHash) {
@@ -370,8 +403,8 @@ fn update_commit(
 
     update_parents(&mut commit, rewritten_commits);
     // update tree
-    if let Some(Some(new_tree_hash)) = rewritten_trees.read().unwrap().get(&commit.tree()) {
-        commit.set_tree(new_tree_hash.clone());
+    if let Some(Some(new_tree_hash)) = rewritten_trees.get(&commit.tree()) {
+        commit.set_tree(new_tree_hash);
     }
 
     signing_policy
