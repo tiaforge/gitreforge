@@ -1,4 +1,4 @@
-//! Prototype: per-thread cache of resolved pack objects, keyed by pack offset.
+//! Per-thread cache of resolved pack objects, keyed by pack offset.
 //!
 //! Without it, every read of an OFS_DELTA object inflates and composes the
 //! whole delta chain down to the base. Neighbouring trees in history share

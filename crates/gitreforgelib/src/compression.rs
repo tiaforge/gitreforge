@@ -35,16 +35,6 @@ pub fn pack_file(path: &Path, prefix: &str, write_bytes: &WriteBytes) -> Result<
     let mut buf_writer = BufWriter::new(file);
     let preamble: Vec<_> = format!("{} {}\0", prefix, data.len()).bytes().collect();
 
-    if std::env::var_os("GITREFORGE_LOOSE_LIBDEFLATE").is_some() {
-        let mut input = preamble.clone();
-        input.extend_from_slice(data);
-        let mut c = libdeflater::Compressor::new(crate::pack_writer::compression_level());
-        let mut out = vec![0; c.zlib_compress_bound(input.len())];
-        let n = c.zlib_compress(&input, &mut out).unwrap();
-        buf_writer.write_all(&out[..n]).unwrap();
-        return Ok(());
-    }
-
     let mut compress = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     compress.write_all(&preamble).unwrap();
     compress.write_all(data).unwrap();

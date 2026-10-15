@@ -27,7 +27,9 @@ That performance comes from working directly with Git objects and refs instead
 of driving each change through Git commands. `gitreforge` reads pack files through
 memory-mapped I/O, parallelizes rewrite work, uses a release allocator tuned for
 throughput, and avoids external command execution in the core rewrite and
-signing paths.
+signing paths. Rewritten objects go into a single new pack file, with trees
+stored as deltas, and the refs into `packed-refs`, instead of creating one file
+per object and ref.
 
 ### Benchmarks
 

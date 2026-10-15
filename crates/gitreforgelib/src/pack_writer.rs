@@ -1,7 +1,10 @@
-//! PROTOTYPE: write rewritten objects into a single pack file instead of loose
-//! objects. Enabled with GITREFORGE_PACK=1. Objects are stored undeltified
-//! (whole zlib streams); compression happens on the calling thread, only the
-//! append to the file is serialized.
+//! Writes rewritten objects into a single new pack file instead of one loose
+//! object file each. Compression happens on the calling thread, only the
+//! append to the file is serialized. Trees are stored as OFS_DELTA against
+//! the last tree written at the same path when that's smaller.
+//!
+//! `GITREFORGE_PACK=0` writes loose objects instead, `GITREFORGE_DELTA=0`
+//! stores every tree whole, `GITREFORGE_LEVEL` sets the zlib level (6).
 
 use std::{
     cell::RefCell,
@@ -69,7 +72,7 @@ pub(crate) fn compression_level() -> CompressionLvl {
 }
 
 pub fn enabled() -> bool {
-    std::env::var_os("GITREFORGE_PACK").is_some_and(|v| v == "1")
+    crate::env_flag("GITREFORGE_PACK", true)
 }
 
 pub fn get(repo_path: &Path) -> Option<&'static PackWriter> {
@@ -97,7 +100,7 @@ impl PackWriter {
         Self {
             pack_dir,
             bases: Mutex::new(FxHashMap::default()),
-            delta: std::env::var_os("GITREFORGE_DELTA").is_some_and(|v| v == "1"),
+            delta: crate::env_flag("GITREFORGE_DELTA", true),
             stats_deltas: AtomicU64::new(0),
             stats_full: AtomicU64::new(0),
             stats_raw_bytes: AtomicU64::new(0),

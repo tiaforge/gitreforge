@@ -4,7 +4,7 @@ use std::{
     fs::File,
     hash::BuildHasher,
     io::BufReader,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use bstr::{
@@ -18,7 +18,6 @@ use crate::{
     Repository,
 };
 
-static PACKED: std::sync::Mutex<Option<Vec<(String, String)>>> = std::sync::Mutex::new(None);
 
 trait RefName {
     fn get_name(&self) -> &BStr;
@@ -91,69 +90,65 @@ impl GitRef {
         Ok(refs)
     }
 
+    /// Rewrite all refs and return their new targets, sorted by name.
+    /// Rewritten tag objects are written here, the refs themselves only by
+    /// `write_all`, so that they can be written after the objects they
+    /// point to are safely stored.
     pub fn update<T: BuildHasher>(
         repository: &mut Repository,
         rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
         dry_run: bool,
-    ) {
-        let packed = std::env::var_os("GITREFORGE_PACKED_REFS").is_some();
-        if packed {
-            *PACKED.lock().unwrap() = Some(Vec::new());
-        }
-        for r in repository.refs().unwrap() {
-            Self::rewrite_ref(
-                repository,
-                r.get_name(),
-                r.get_target(),
-                rewritten_commits,
-                dry_run,
-            );
-        }
+    ) -> Vec<(String, String)> {
+        let mut refs: Vec<(String, String)> = repository
+            .refs()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let target = Self::rewrite_ref(repository, r.get_target(), rewritten_commits, dry_run);
+                (r.get_name().to_string(), target.to_string())
+            })
+            .collect();
+        refs.sort();
+        refs
+    }
 
-        let mut path = repository.path.clone();
-        path.push("packed-refs");
+    /// Store the refs either in a single packed-refs file, removing their
+    /// loose files, or as loose files, removing packed-refs.
+    pub fn write_all(repository_path: &Path, refs: &[(String, String)], packed: bool) {
+        let packed_refs = repository_path.join("packed-refs");
         if packed {
-            // PROTOTYPE: one packed-refs file instead of one loose file per ref
-            let mut refs = PACKED.lock().unwrap().take().unwrap();
-            refs.sort();
             let mut out = String::from("# pack-refs with: sorted \n");
             for (name, target) in refs {
-                let loose = repository.path.join(&name);
+                out.push_str(target);
+                out.push(' ');
+                out.push_str(name);
+                out.push('\n');
+            }
+            // same order as git pack-refs: replace packed-refs, then drop
+            // the loose files that would otherwise shadow it
+            let tmp = repository_path.join("packed-refs.new");
+            std::fs::write(&tmp, out).unwrap();
+            std::fs::rename(tmp, packed_refs).unwrap();
+            for (name, _) in refs {
+                let loose = repository_path.join(name);
                 if loose.is_file() {
                     std::fs::remove_file(loose).unwrap();
                 }
-                out.push_str(&target);
-                out.push(' ');
-                out.push_str(&name);
-                out.push('\n');
             }
-            let tmp = repository.path.join("packed-refs.new");
-            std::fs::write(&tmp, out).unwrap();
-            std::fs::rename(tmp, path).unwrap();
-            return;
+        } else {
+            for (name, target) in refs {
+                let path = repository_path.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, format!("{target}\n")).unwrap();
+            }
+            if packed_refs.exists() {
+                std::fs::remove_file(packed_refs).unwrap();
+            }
         }
-        if path.exists() {
-            std::fs::remove_file(path).unwrap();
-        }
-    }
-
-    fn write_ref(repository_path: &str, ref_name: &str, ref_target: &str) {
-        if let Some(refs) = PACKED.lock().unwrap().as_mut() {
-            refs.push((ref_name.to_owned(), ref_target.to_owned()));
-            return;
-        }
-        let path: PathBuf = [repository_path, ref_name].iter().collect();
-
-        let file_name = path.file_name().unwrap();
-        let ref_path = path.to_str().unwrap();
-        let dir_path = &ref_path[0..ref_path.len() - file_name.len()];
-        std::fs::create_dir_all(dir_path).unwrap();
-        std::fs::write(path, format!("{ref_target}\n")).unwrap();
     }
 
     fn rewrite_ref<T: BuildHasher>(
         repository: &mut Repository,
-        ref_name: &BStr,
         ref_target: &BStr,
         rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
         dry_run: bool,
@@ -165,44 +160,16 @@ impl GitRef {
             crate::objs::GitObject::Commit(_) => {
                 let tag_target: CommitHash = ref_target.try_into().unwrap();
                 let rewritten_target = rewritten_commits.get(&tag_target).unwrap_or(&tag_target);
-                Self::write_ref(
-                    repository.path.clone().to_str().unwrap(),
-                    ref_name.to_str().unwrap(),
-                    rewritten_target.to_string().as_str(),
-                );
-
                 rewritten_target.clone().0
             }
-            crate::objs::GitObject::Tree(tree) => {
-                Self::write_ref(
-                    repository.path.to_str().unwrap(),
-                    ref_name.to_str().unwrap(),
-                    ref_target.to_str().unwrap(),
-                );
-
-                tree.hash().0.clone()
-            }
+            crate::objs::GitObject::Tree(tree) => tree.hash().0.clone(),
             crate::objs::GitObject::Tag(target_tag) => match target_tag.target_type() {
                 TagTargetType::Commit | TagTargetType::Tag => {
-                    let target_hash =
-                        Self::rewrite_tag(repository, target_tag, rewritten_commits, dry_run);
-
-                    Self::write_ref(
-                        repository.path.to_str().unwrap(),
-                        ref_name.to_str().unwrap(),
-                        target_hash.to_string().as_str(),
-                    );
-
-                    target_hash
+                    Self::rewrite_tag(repository, target_tag, rewritten_commits, dry_run)
                 }
                 TagTargetType::Tree | TagTargetType::Blob => {
                     let target_tag_hash = target_tag.hash().clone();
                     Repository::write(repository.path.clone(), target_tag.into(), dry_run);
-                    Self::write_ref(
-                        repository.path.to_str().unwrap(),
-                        ref_name.to_str().unwrap(),
-                        target_tag_hash.to_string().as_str(),
-                    );
                     target_tag_hash
                 }
             },

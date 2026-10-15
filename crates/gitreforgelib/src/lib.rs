@@ -67,7 +67,7 @@ pub struct WriteObject {
 }
 
 impl WriteObject {
-    /// PROTOTYPE: path of a tree, used to pick a delta base in the pack writer
+    /// Path of a tree, used to pick a delta base in the pack writer
     pub fn with_delta_path(mut self, path: &[u8]) -> Self {
         self.delta_path = Some(path.into());
         self
@@ -105,6 +105,16 @@ impl From<Tree> for WriteObject {
             bytes: value.bytes(),
             delta_path: None,
         }
+    }
+}
+
+/// Boolean switch from the environment: "0" turns it off, "1" on, and
+/// anything else (or unset) keeps the default.
+pub(crate) fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name).as_deref() {
+        Ok("0") => false,
+        Ok("1") => true,
+        _ => default,
     }
 }
 
@@ -208,14 +218,24 @@ impl Repository {
         rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
         dry_run: bool,
     ) {
-        if !dry_run {
-            let t = std::time::Instant::now();
-            refs::GitRef::update(self, rewritten_commits, dry_run);
-            let t2 = std::time::Instant::now();
-            pack_writer::finish_if_enabled();
-            if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
-                eprintln!("TIMING refs={:.3} pack_finish={:.3}", (t2 - t).as_secs_f64(), t2.elapsed().as_secs_f64());
-            }
+        if dry_run {
+            return;
+        }
+
+        let t = std::time::Instant::now();
+        let refs = refs::GitRef::update(self, rewritten_commits, dry_run);
+        let t2 = std::time::Instant::now();
+        // the refs must only point to objects that are safely stored
+        pack_writer::finish_if_enabled();
+        let t3 = std::time::Instant::now();
+        refs::GitRef::write_all(&self.path, &refs, env_flag("GITREFORGE_PACKED_REFS", true));
+        if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
+            eprintln!(
+                "TIMING refs={:.3} pack_finish={:.3} refs_write={:.3}",
+                (t2 - t).as_secs_f64(),
+                (t3 - t2).as_secs_f64(),
+                t3.elapsed().as_secs_f64()
+            );
         }
     }
 
