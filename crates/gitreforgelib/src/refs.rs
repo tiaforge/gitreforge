@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     fs::File,
     hash::BuildHasher,
@@ -77,9 +77,15 @@ impl GitRef {
 
         let mut refs = get_loose_refs(base_path, "refs");
 
-        if let Some(mut p) = packed_refs {
-            refs.append(&mut p);
-            refs.dedup_by(|x, y| x.get_name() == y.get_name());
+        if let Some(packed_refs) = packed_refs {
+            // a loose ref is newer than a packed one with the same name
+            let loose_names: HashSet<BString> =
+                refs.iter().map(|r| r.get_name().to_owned()).collect();
+            refs.extend(
+                packed_refs
+                    .into_iter()
+                    .filter(|r| !loose_names.contains(r.get_name())),
+            );
         }
 
         Ok(refs)
@@ -142,7 +148,7 @@ impl GitRef {
         let ref_path = path.to_str().unwrap();
         let dir_path = &ref_path[0..ref_path.len() - file_name.len()];
         std::fs::create_dir_all(dir_path).unwrap();
-        std::fs::write(path, ref_target).unwrap();
+        std::fs::write(path, format!("{ref_target}\n")).unwrap();
     }
 
     fn rewrite_ref<T: BuildHasher>(
@@ -271,7 +277,10 @@ fn get_loose_refs(base_path: &Path, current_path: &str) -> Vec<GitRef> {
 fn get_packed_refs(lines: &mut ByteLines<BufReader<File>>) -> Result<Vec<GitRef>, Box<dyn Error>> {
     let mut result: Vec<GitRef> = Vec::new();
 
-    let mut previous_line = Some(lines.next().unwrap().unwrap());
+    let Some(first_line) = lines.next() else {
+        return Ok(result);
+    };
+    let mut previous_line = Some(first_line?);
     let mut line_started = previous_line
         .as_ref()
         .map(|x| !x.starts_with(b"#"))
@@ -320,10 +329,69 @@ fn get_packed_refs(lines: &mut ByteLines<BufReader<File>>) -> Result<Vec<GitRef>
 mod test {
     use super::*;
 
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn read_packed_refs() {
-        let test = GitRef::read_all(std::path::Path::new(".git")).expect("Cannot read file");
-        dbg!(test);
+    fn read_packed_and_loose_refs() {
+        let dir = std::env::temp_dir().join(format!("gitreforge-refs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&dir, &["tag", "-a", "-m", "annotated", "v1"]);
+        git(&dir, &["branch", "a-branch"]);
+        git(&dir, &["pack-refs", "--all"]);
+        // main moves on: the loose ref is current, the packed one is stale
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        git(&dir, &["branch", "z-loose-only"]);
+
+        let mut refs: Vec<(String, String)> = GitRef::read_all(&dir.join(".git"))
+            .expect("Cannot read refs")
+            .iter()
+            .map(|r| (r.get_name().to_string(), r.get_target().to_string()))
+            .collect();
+        refs.sort();
+
+        let expected: Vec<(String, String)> = git(
+            &dir,
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+        )
+        .lines()
+        .map(|l| {
+            let (name, hash) = l.split_once(' ').unwrap();
+            (name.to_string(), hash.to_string())
+        })
+        .collect();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn read_refs_with_empty_packed_refs() {
+        let dir = std::env::temp_dir().join(format!("gitreforge-refs-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        std::fs::write(dir.join(".git/packed-refs"), "").unwrap();
+
+        let refs = GitRef::read_all(&dir.join(".git")).expect("Cannot read refs");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(refs.len(), 1);
     }
 }
