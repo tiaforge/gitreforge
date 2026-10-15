@@ -358,7 +358,7 @@ fn push_insert(out: &mut Vec<u8>, mut data: &[u8]) {
 /// Entry-level delta between two trees: unchanged entries become copies from
 /// the base (merged while they are contiguous there), everything else is
 /// inserted literally. Gives up once the delta exceeds `max_len`.
-fn encode_tree_delta(base: &[u8], target: &[u8], max_len: usize) -> Option<Vec<u8>> {
+pub(crate) fn encode_tree_delta(base: &[u8], target: &[u8], max_len: usize) -> Option<Vec<u8>> {
     let mut index: FxHashMap<&[u8], usize> = FxHashMap::default();
     index.reserve(base.len() / 40);
     for (start, end) in tree_entries(base) {

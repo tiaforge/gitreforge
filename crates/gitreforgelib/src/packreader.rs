@@ -12,6 +12,7 @@ use crate::compression::Decompression;
 use crate::idx_reader::get_pack_offsets;
 use crate::objs::{CommitBase, Tag};
 use crate::objs::{GitObject, Tree};
+use crate::delta_cache;
 use crate::pack_diff::PackDiff;
 use crate::shared::ObjectHash;
 
@@ -88,7 +89,9 @@ impl PackReader {
             let bytes: Box<[u8]>;
 
             let mut pack_object = PackObject::create(mmap, offset);
-            if pack_object.object_type == 6 {
+            if pack_object.object_type == 6 && delta_cache::enabled() {
+                (bytes, pack_object) = delta_cache::read(decompression, mmap, pack_object);
+            } else if pack_object.object_type == 6 {
                 // diff
                 (bytes, pack_object) = restore_diff_object_bytes(decompression, mmap, pack_object);
             } else if pack_object.object_type == 7 {

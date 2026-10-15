@@ -261,7 +261,7 @@ fn get_instructions_from_copy(
     result
 }
 
-fn read_varint(delta_data: &[u8], mut offset: usize) -> (usize, usize) {
+pub(crate) fn read_varint(delta_data: &[u8], mut offset: usize) -> (usize, usize) {
     let mut byte = delta_data[offset];
     offset += 1;
     let mut len = (byte & 0b01111111) as usize;
@@ -299,7 +299,7 @@ fn build_delta_instructions(
     result
 }
 
-fn read_base_offset(mmap: &Mmap, pack_object: &PackObject) -> (usize, usize) {
+pub(crate) fn read_base_offset(mmap: &Mmap, pack_object: &PackObject) -> (usize, usize) {
     let mut byte = mmap
         .get(pack_object.offset + pack_object.header_len)
         .unwrap();

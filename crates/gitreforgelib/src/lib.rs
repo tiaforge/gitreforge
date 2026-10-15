@@ -24,6 +24,7 @@ mod compression;
 mod idx_reader;
 mod pack_diff;
 pub mod pack_writer;
+mod delta_cache;
 mod packreader;
 mod refs;
 mod shared;
