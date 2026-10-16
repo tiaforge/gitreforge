@@ -7,6 +7,8 @@
 #   tokio-heavy     remove tokio/ at any depth (~13.4k commits)
 #   tokio-wildcard  remove top-level tokio-*/ (27 crates, ~6.1k commits)
 #   git-docs        git/git: remove Documentation/ (top level only)
+#   git-makefile    git/git: remove every file named Makefile, at any depth
+#   git-po-regex    git/git: remove every *.po file, with a regular expression
 #   git-rename      git/git: rewrite all 7 "Linus Torvalds" identities (no BFG,
 #                   it cannot rewrite authors/committers)
 # Env:   BENCH_DIR  work dir for tools, mirrors and scratch copies (default: target/bench)
@@ -81,6 +83,24 @@ git-docs)
     BFG_ARGS=(--delete-folders Documentation)
     FILTER_REPO_ARGS=(--invert-paths --path Documentation/)
     LEFTOVER_REGEX='(^|/)Documentation/'
+    ;;
+git-makefile)
+    REPO_URL=https://github.com/git/git.git
+    DESC="remove every file named Makefile"
+    KIND=remove
+    GITREFORGE_ARGS=(remove --file Makefile)
+    BFG_ARGS=(--delete-files Makefile)
+    FILTER_REPO_ARGS=(--invert-paths --path-regex '(^|/)Makefile$')
+    LEFTOVER_REGEX='(^|/)Makefile$'
+    ;;
+git-po-regex)
+    REPO_URL=https://github.com/git/git.git
+    DESC="remove every *.po file (regex)"
+    KIND=remove
+    GITREFORGE_ARGS=(remove --regex '\.po$')
+    BFG_ARGS=(--delete-files '*.po')
+    FILTER_REPO_ARGS=(--invert-paths --path-regex '\.po$')
+    LEFTOVER_REGEX='\.po$'
     ;;
 git-rename)
     REPO_URL=https://github.com/git/git.git

@@ -42,6 +42,8 @@ Wall-clock time to rewrite the full history of a mirror clone, compared with
 | [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-util/` | **0.26 s** | 2.0 s (7.6×) | 5.1 s (19×) |
 | [tokio](https://github.com/tokio-rs/tokio) (24k commits) | Remove `tokio-*/` (wildcard) | **0.27 s** | 2.1 s (7.7×) | 8.6 s (32×) |
 | [git](https://github.com/git/git) (205k commits) | Remove `Documentation/` | **2.8 s** | 69 s (25×) | fails after 94 s¹ |
+| [git](https://github.com/git/git) (205k commits) | Remove every `Makefile` | **5.5 s** | 78 s (14×) | fails after 142 s¹ |
+| [git](https://github.com/git/git) (205k commits) | Remove every `*.po` file (regex) | **5.3 s** | 72 s (14×) | 103 s (20×) |
 | [git](https://github.com/git/git) (205k commits) | Rename an author (7 identities) | **0.86 s** | 61 s (71×) | not supported |
 
 ¹ BFG aborts with a `NullPointerException` at 95% of the commits on two old
@@ -52,6 +54,19 @@ kept, so every tool that finishes produces the same trees and identities. Measur
 [hyperfine](https://github.com/sharkdp/hyperfine) on an AMD Ryzen Z2 Extreme
 with NVMe storage. Reproduce with `bench/rewrite.sh <scenario>`; the script
 downloads the other tools and lists the available scenarios.
+
+The other commands on the same git/git mirror:
+
+| Task | gitreforge | Reference |
+|:---|---:|:---|
+| `contributor list` | **0.43 s** | `git log --all` piped into `sort -u`: 1.17 s (2.7×) |
+| `--dry-run remove --directory /Documentation` | 2.3 s | the same rewrite without `--dry-run`: 3.0 s |
+| `prune-empty` after removing `Documentation/` | **1.09 s** | git filter-repo `--prune-empty always`: 68 s (63×)² |
+
+² The two tools don't prune the same commits: filter-repo removes 11,292
+commits where `gitreforge` removes 8,103.
+
+Reproduce with `bench/features.sh` after `bench/rewrite.sh git-docs`.
 
 ## Installation
 
