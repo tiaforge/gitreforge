@@ -78,7 +78,7 @@ impl From<CommitEditable> for WriteObject {
     fn from(value: CommitEditable) -> Self {
         let wb = value.to_bytes();
         Self {
-            hash: calculate_hash(&wb.bytes, b"commit"),
+            hash: calculate_hash(wb.get_bytes(), b"commit"),
             prefix: String::from("commit"),
             bytes: wb,
             delta_path: None,
