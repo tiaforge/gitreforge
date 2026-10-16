@@ -167,6 +167,66 @@ fn prune_merge_of_only_empty_commits() {
     }
 }
 
+/// When the merged branch only had empty commits but the other side moved on,
+/// pruning makes the merge's second parent an ancestor of its first. The
+/// merge then merges nothing and is pruned as well.
+#[test]
+fn prune_merge_of_only_empty_commits_after_main_moved() {
+    let repo = TestRepo::create("prune-empty-merge-moved");
+    repo.write("a.txt", "a\n");
+    repo.commit("a");
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.commit("side empty 1");
+    repo.commit("side empty 2");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("m.txt", "m\n");
+    repo.commit("main change");
+    repo.with_identity(
+        common::AUTHOR,
+        common::AUTHOR,
+        &["merge", "-q", "--no-ff", "-m", "merge empty side", "side"],
+    );
+    repo.write("b.txt", "b\n");
+    repo.commit("b");
+    // a merge that was already redundant before pruning stays
+    let redundant = repo.with_identity(
+        common::AUTHOR,
+        common::AUTHOR,
+        &[
+            "commit-tree",
+            "-p",
+            "main~1",
+            "-p",
+            "main~3",
+            "-m",
+            "merge redundant",
+            "main~1^{tree}",
+        ],
+    );
+    repo.git(&["branch", "redundant", &redundant]);
+
+    for (kind, mirror) in mirrors(&repo) {
+        let before = commits(&mirror);
+        repo.reforge_ok(&mirror, &["prune-empty"]);
+        fsck(&mirror);
+        let after = commits(&mirror);
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            ["a", "b", "main change", "merge redundant"],
+            "{kind}"
+        );
+        assert_eq!(after["b"].parents, ["main change"], "{kind}");
+        assert_eq!(after["main change"].id, before["main change"].id, "{kind}");
+        assert_eq!(subject(&mirror, "side"), "a", "{kind}");
+        assert_eq!(subject(&mirror, "main"), "b", "{kind}");
+        assert_eq!(
+            after["merge redundant"].parents,
+            ["main change", "a"],
+            "{kind}"
+        );
+    }
+}
+
 #[test]
 fn prune_after_remove() {
     let repo = TestRepo::create("prune-after-remove");

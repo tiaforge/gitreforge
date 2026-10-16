@@ -61,10 +61,11 @@ The other commands on the same git/git mirror:
 |:---|---:|:---|
 | `contributor list` | **0.43 s** | `git log --all` piped into `sort -u`: 1.17 s (2.7×) |
 | `--dry-run remove --directory /Documentation` | 2.3 s | the same rewrite without `--dry-run`: 3.0 s |
-| `prune-empty` after removing `Documentation/` | **1.09 s** | git filter-repo `--prune-empty always`: 68 s (63×)² |
+| `prune-empty` after removing `Documentation/` | **1.43 s** | git filter-repo `--prune-empty always`: 68 s (48×)² |
 
-² The two tools don't prune the same commits: filter-repo removes 11,292
-commits where `gitreforge` removes 8,103.
+² `gitreforge` removes 11,485 commits, filter-repo 11,292: every commit
+filter-repo removes, plus merges that merge nothing once pruning makes one
+parent an ancestor of the other.
 
 Reproduce with `bench/features.sh` after `bench/rewrite.sh git-docs`.
 
