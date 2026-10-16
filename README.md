@@ -179,6 +179,9 @@ rewrite doesn't change keep their id and their existing signature.
 
 Supported signing configuration:
 
+- The configuration is read from the repository's `config` and the global git
+  configuration (`$GIT_CONFIG_GLOBAL`, or `$XDG_CONFIG_HOME/git/config` and
+  `~/.gitconfig`).
 - `gpg.format` must be `ssh`.
 - `user.signingkey` may point to a public key file, a private OpenSSH key file,
   an inline `ssh-...` public key, or a `key::ssh-...` value.

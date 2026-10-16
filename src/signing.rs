@@ -137,10 +137,24 @@ struct GitConfig {
 }
 
 impl GitConfig {
+    /// Global and repository configuration, in git's order: later files
+    /// override earlier ones.
     fn read(repository_path: &Path) -> Self {
         let mut values = HashMap::new();
-        if let Some(home) = std::env::var_os("HOME") {
-            read_config_file(&PathBuf::from(home).join(".gitconfig"), &mut values);
+        if let Some(global) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+            read_config_file(Path::new(&global), &mut values);
+        } else {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let xdg = std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| home.as_ref().map(|home| home.join(".config")));
+            if let Some(xdg) = xdg {
+                read_config_file(&xdg.join("git/config"), &mut values);
+            }
+            if let Some(home) = home {
+                read_config_file(&home.join(".gitconfig"), &mut values);
+            }
         }
         read_config_file(&repository_path.join("config"), &mut values);
         Self { values }
