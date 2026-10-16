@@ -270,6 +270,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -338,6 +339,7 @@ dependencies = [
  "ed25519",
  "sha2",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -427,11 +429,14 @@ dependencies = [
  "bstr",
  "clap",
  "clap-markdown",
+ "ed25519-dalek",
  "gitreforgelib",
  "mimalloc",
  "rayon",
  "regex",
+ "rsa",
  "rustc-hash",
+ "sha2",
  "smallvec",
  "ssh-key",
 ]

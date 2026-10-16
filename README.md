@@ -190,6 +190,11 @@ Supported signing configuration:
 - Private key files are read and used directly. Encrypted private keys must be
   added to the SSH agent instead.
 
+Each commit's id depends on the signature of its parent, so the signatures are
+made one after another. An Ed25519 key file is the fastest option, about 10 µs
+per commit; the SSH agent needs about 100 µs per commit, RSA keys a few
+milliseconds.
+
 Current limitations:
 
 - OpenPGP signing is not supported.

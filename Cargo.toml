@@ -34,3 +34,8 @@ clap = { version = "4.1.8", features = ["derive"] }
 clap-markdown = "0.1.4"
 gitreforgelib = { version = "1.0.0", path = "crates/gitreforgelib" }
 ssh-key = { version = "0.6.7", features = ["crypto"] }
+# used directly for faster signing than through ssh-key; the default
+# features include the precomputed tables for Ed25519
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "zeroize"] }
+rsa = { version = "0.9.10", default-features = false, features = ["sha2", "u64_digit"] }
+sha2 = { version = "0.10.9", default-features = false }

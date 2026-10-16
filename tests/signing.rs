@@ -18,10 +18,12 @@ struct Key {
     allowed_signers: PathBuf,
 }
 
-fn create_key(repo: &TestRepo) -> Key {
+/// `key_type`: ssh-keygen arguments that select the type of key
+fn create_key(repo: &TestRepo, key_type: &[&str]) -> Key {
     let private = repo.root.join("key");
     let output = Command::new("ssh-keygen")
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+        .args(key_type)
+        .args(["-q", "-N", "", "-C", "test", "-f"])
         .arg(&private)
         .output()
         .unwrap();
@@ -68,8 +70,12 @@ fn has_signature_header(repo: &Path, rev: &str) -> bool {
 /// Commits by Alice and Bob, some of them signed by git itself, with a
 /// secret added after the first commit.
 fn create_fixture(name: &str) -> (TestRepo, Key) {
+    create_fixture_with_key(name, &["-t", "ed25519"])
+}
+
+fn create_fixture_with_key(name: &str, key_type: &[&str]) -> (TestRepo, Key) {
     let repo = TestRepo::create(name);
-    let key = create_key(&repo);
+    let key = create_key(&repo, key_type);
     let sign = [
         "-c".to_owned(),
         "gpg.format=ssh".to_owned(),
@@ -433,4 +439,37 @@ fn signing_configuration_errors() {
     assert!(run().contains("SSH_AUTH_SOCK"));
 
     assert_eq!(refs(&mirror), before);
+}
+
+/// RSA keys need their own signing code, ECDSA keys are signed by ssh-key.
+#[test]
+fn sign_with_other_key_types() {
+    for key_type in [&["-t", "rsa", "-b", "3072"][..], &["-t", "ecdsa"]] {
+        let (repo, key) = create_fixture_with_key("sign-key-types", key_type);
+        let args = [
+            "--sign-committer",
+            "alice@example.com",
+            "remove",
+            "--file",
+            "secret.txt",
+        ];
+
+        let mirror = repo.packed_mirror();
+        configure_private_key(&mirror, &key);
+        let before = commits(&mirror);
+        repo.reforge_ok(&mirror, &args);
+        check_signatures(&mirror, &key, &before);
+
+        let agent = start_agent(&repo, &key);
+        let mirror = repo.loose_mirror();
+        git(&mirror, &["config", "gpg.format", "ssh"]);
+        git(
+            &mirror,
+            &["config", "user.signingKey", key.public.to_str().unwrap()],
+        );
+        let before = commits(&mirror);
+        let socket = agent.socket.to_str().unwrap();
+        repo.reforge_env_ok(&mirror, &[("SSH_AUTH_SOCK", socket)], &args);
+        check_signatures(&mirror, &key, &before);
+    }
 }

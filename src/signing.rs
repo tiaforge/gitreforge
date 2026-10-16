@@ -4,11 +4,17 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use gitreforgelib::objs::CommitEditable;
+use rsa::signature::{SignatureEncoding, Signer};
 use rustc_hash::FxHashSet;
-use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, Signature, SshSig};
+use sha2::Sha512;
+use ssh_key::{
+    Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, Signature, SshSig,
+    private::KeypairData, public::KeyData,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -58,10 +64,27 @@ impl SigningPolicy {
     }
 }
 
+/// Every commit's id depends on its parent's signature, so the signatures
+/// are made one after another and their cost adds up: keys are prepared
+/// once, not for every signature.
 enum SshSigner {
+    Ed25519 {
+        key: ed25519_dalek::SigningKey,
+        public: KeyData,
+    },
+    Rsa {
+        key: rsa::pkcs1v15::SigningKey<Sha512>,
+        public: KeyData,
+    },
+    /// Other key types, signed through ssh-key
     PrivateKey(PrivateKey),
-    /// Key blob of the agent identity to sign with
-    Agent { socket: String, identity: Vec<u8> },
+    Agent {
+        stream: Mutex<AgentStream>,
+        /// Key blob of the agent identity to sign with
+        identity: Vec<u8>,
+        public: KeyData,
+        flags: u32,
+    },
 }
 
 impl SshSigner {
@@ -109,10 +132,40 @@ impl SshSigner {
                 )
                 .into());
             }
-            return Ok(Self::PrivateKey(key));
+            return Self::private_key(key);
         }
 
         Self::agent(Some(&PublicKey::from_openssh(contents.trim())?))
+    }
+
+    /// ssh-key derives Ed25519 and RSA keys again for every signature,
+    /// which costs more than the signature itself, so those are prepared here.
+    fn private_key(key: PrivateKey) -> Result<Self> {
+        let public = key.public_key().key_data().clone();
+        Ok(match key.key_data() {
+            KeypairData::Ed25519(keypair) => Self::Ed25519 {
+                key: ed25519_dalek::SigningKey::try_from(keypair)?,
+                public,
+            },
+            KeypairData::Rsa(keypair) => {
+                // ssh-key 0.6 passes p twice instead of p and q here, so its
+                // own RSA signing always fails
+                let key = rsa::RsaPrivateKey::from_components(
+                    rsa::BigUint::try_from(&keypair.public.n)?,
+                    rsa::BigUint::try_from(&keypair.public.e)?,
+                    rsa::BigUint::try_from(&keypair.private.d)?,
+                    vec![
+                        rsa::BigUint::try_from(&keypair.private.p)?,
+                        rsa::BigUint::try_from(&keypair.private.q)?,
+                    ],
+                )?;
+                Self::Rsa {
+                    key: rsa::pkcs1v15::SigningKey::new(key),
+                    public,
+                }
+            }
+            _ => Self::PrivateKey(key),
+        })
     }
 
     /// Picks the configured key, or the first one, from the agent.
@@ -134,18 +187,55 @@ impl SshSigner {
                 .ok_or("SSH_AUTH_SOCK agent has no signing identities")?
         };
 
+        let public = PublicKey::from_bytes(&identity.blob)?.key_data().clone();
+        // SSHSIG doesn't allow the agent's default SHA-1 RSA signatures
+        let flags = if matches!(public.algorithm(), Algorithm::Rsa { .. }) {
+            SSH_AGENT_RSA_SHA2_512
+        } else {
+            0
+        };
+
+        // one connection for all signatures
         Ok(Self::Agent {
-            socket,
+            stream: Mutex::new(stream),
             identity: identity.blob,
+            public,
+            flags,
         })
     }
 
     fn sign(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        let signature = match self {
-            Self::PrivateKey(key) => key.sign(SSHSIG_NAMESPACE, HashAlg::default(), payload)?,
-            Self::Agent { socket, identity } => sign_with_agent(socket, identity, payload)?,
+        let hash = HashAlg::default();
+        let signed_data = || SshSig::signed_data(SSHSIG_NAMESPACE, hash, payload);
+        let (public, signature) = match self {
+            Self::PrivateKey(key) => {
+                let signature = key.sign(SSHSIG_NAMESPACE, hash, payload)?;
+                return Ok(signature.to_pem(LineEnding::LF)?.into_bytes());
+            }
+            Self::Ed25519 { key, public } => {
+                let signature = key.sign(&signed_data()?).to_bytes().to_vec();
+                (public, Signature::new(Algorithm::Ed25519, signature)?)
+            }
+            Self::Rsa { key, public } => {
+                let signature = key.try_sign(&signed_data()?)?.to_vec();
+                let algorithm = Algorithm::Rsa {
+                    hash: Some(HashAlg::Sha512),
+                };
+                (public, Signature::new(algorithm, signature)?)
+            }
+            Self::Agent {
+                stream,
+                identity,
+                public,
+                flags,
+            } => {
+                let mut stream = stream.lock().unwrap();
+                let signature = agent_sign(&mut *stream, identity, &signed_data()?, *flags)?;
+                (public, signature)
+            }
         };
 
+        let signature = SshSig::new(public.clone(), SSHSIG_NAMESPACE, hash, signature)?;
         Ok(signature.to_pem(LineEnding::LF)?.into_bytes())
     }
 }
@@ -231,26 +321,22 @@ fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn sign_with_agent(socket: &str, identity: &[u8], payload: &[u8]) -> Result<SshSig> {
-    let mut stream = connect_agent(socket)?;
-    let signed_data = SshSig::signed_data(SSHSIG_NAMESPACE, HashAlg::default(), payload)?;
-    let signature = agent_sign(&mut stream, identity, &signed_data)?;
-    let public_key = PublicKey::from_bytes(identity)?;
-    Ok(SshSig::new(
-        public_key.key_data().clone(),
-        SSHSIG_NAMESPACE,
-        HashAlg::default(),
-        signature,
-    )?)
-}
+/// SSH_AGENT_RSA_SHA2_512 sign request flag
+const SSH_AGENT_RSA_SHA2_512: u32 = 4;
 
 #[cfg(unix)]
-fn connect_agent(socket: &str) -> Result<impl Read + Write + use<>> {
-    Ok(std::os::unix::net::UnixStream::connect(socket)?)
+type AgentStream = std::os::unix::net::UnixStream;
+
+#[cfg(not(unix))]
+type AgentStream = std::io::Empty;
+
+#[cfg(unix)]
+fn connect_agent(socket: &str) -> Result<AgentStream> {
+    Ok(AgentStream::connect(socket)?)
 }
 
 #[cfg(not(unix))]
-fn connect_agent(_socket: &str) -> Result<impl Read + Write + use<>> {
+fn connect_agent(_socket: &str) -> Result<AgentStream> {
     Err("SSH agent signing is currently implemented for Unix sockets only".into())
 }
 
@@ -280,11 +366,12 @@ fn agent_sign(
     stream: &mut (impl Read + Write),
     key_blob: &[u8],
     signed_data: &[u8],
+    flags: u32,
 ) -> Result<Signature> {
     let mut request = vec![13];
     push_string(&mut request, key_blob);
     push_string(&mut request, signed_data);
-    request.extend_from_slice(&0u32.to_be_bytes());
+    request.extend_from_slice(&flags.to_be_bytes());
     write_agent_message(stream, &request)?;
 
     let response = read_agent_message(stream)?;
