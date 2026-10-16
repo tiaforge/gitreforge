@@ -70,7 +70,7 @@ impl PackReader {
             let git_object = match r.1.object_type {
                 1u8 => GitObject::Commit(CommitBase::create(object_hash.into(), r.0, false)),
                 2u8 => GitObject::Tree(Tree::create(object_hash.into(), r.0, false)),
-                // 3u8 => GitObject::Blob(Blob::create(object_hash, bytes)),
+                3u8 => GitObject::Blob(object_hash),
                 4u8 => GitObject::Tag(Tag::create(object_hash.into(), r.0, false)),
                 _ => panic!("unknown git object type"),
             };

@@ -163,6 +163,7 @@ impl GitRef {
                 rewritten_target.clone().0
             }
             crate::objs::GitObject::Tree(tree) => tree.hash().0.clone(),
+            crate::objs::GitObject::Blob(hash) => hash,
             crate::objs::GitObject::Tag(target_tag) => match target_tag.target_type() {
                 TagTargetType::Commit | TagTargetType::Tag => {
                     Self::rewrite_tag(repository, target_tag, rewritten_commits, dry_run)

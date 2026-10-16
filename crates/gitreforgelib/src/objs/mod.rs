@@ -60,7 +60,8 @@ pub struct Tag {
 pub enum GitObject {
     Commit(CommitBase),
     Tree(Tree),
-    // Blob(Blob),
+    /// Only the hash, blobs are never parsed or rewritten
+    Blob(ObjectHash),
     Tag(Tag),
 }
 

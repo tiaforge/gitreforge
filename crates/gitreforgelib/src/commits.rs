@@ -256,8 +256,7 @@ pub(crate) fn read_object_from_hash(
         }
 
         if bytes.starts_with(b"blob ") {
-            todo!("Not implemented yet")
-            // return Some(GitObject::Blob(Blob::create(hash, bytes)));
+            return Some(GitObject::Blob(hash));
         }
 
         dbg!(hash);
