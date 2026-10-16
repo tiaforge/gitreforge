@@ -220,7 +220,8 @@ Commands:
 
 - `contributor list`: list all author and committer identities.
 - `contributor rewrite`: rewrite identities from stdin mappings in the form
-  `Old User <old@example.com> = New User <new@example.com>`.
+  `Old User <old@example.com> = New User <new@example.com>`. Blank lines are
+  ignored.
 - `remove --file <FILE>`: remove matching files from history. `*` can be used
   as a wildcard at the beginning or end.
 - `remove --directory <DIRECTORY>`: remove matching directories from history.

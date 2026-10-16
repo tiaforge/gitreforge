@@ -1,5 +1,9 @@
 use std::{
-    collections::HashMap, error::Error, io::stdin, path::PathBuf, sync::mpsc::channel,
+    collections::HashMap,
+    error::Error,
+    io::{BufRead, stdin},
+    path::PathBuf,
+    sync::mpsc::channel,
     thread::spawn,
 };
 
@@ -22,15 +26,42 @@ fn split_index(line: &[u8]) -> Option<usize> {
     None
 }
 
-fn get_mappings() -> Result<FxHashMap<Vec<u8>, Vec<u8>>, Box<dyn Error + Send + Sync>> {
+/// "Name <email>", as in commit headers
+fn is_identity(identity: &[u8]) -> bool {
+    let Some(start) = identity.find_byte(b'<') else {
+        return false;
+    };
+    start > 1
+        && identity[start - 1] == b' '
+        && identity.ends_with(b">")
+        && identity[start + 1..identity.len() - 1]
+            .find_byteset(b"<>")
+            .is_none()
+}
+
+fn parse_mappings(
+    input: impl BufRead,
+) -> Result<FxHashMap<Vec<u8>, Vec<u8>>, Box<dyn Error + Send + Sync>> {
     let mut mappings = FxHashMap::default();
 
-    for line in stdin().lock().byte_lines() {
+    for line in input.byte_lines() {
         let line = line?;
-        let split_pos = split_index(&line).ok_or("Line is malformed. Pattern: old = new")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let malformed = || {
+            format!(
+                "Line is malformed: `{}`. Pattern: Old Name <old@example.com> = New Name <new@example.com>",
+                line.as_bstr()
+            )
+        };
+        let split_pos = split_index(&line).ok_or_else(malformed)?;
 
         let old = line[0..split_pos].trim().to_owned();
         let new = line[split_pos + 1..].trim().to_owned();
+        if !is_identity(&old) || !is_identity(&new) {
+            return Err(malformed().into());
+        }
 
         if old != new {
             mappings.insert(old, new);
@@ -45,7 +76,7 @@ pub fn rewrite(
     dry_run: bool,
     signing_policy: &SigningPolicy,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mappings = get_mappings()?;
+    let mappings = parse_mappings(stdin().lock())?;
 
     let (tx, rx) = channel();
     let write_path = repository_path.clone();
@@ -103,4 +134,37 @@ pub fn get_contributors(repository_path: PathBuf) -> Result<Vec<BString>, Box<dy
     committers.sort();
 
     Ok(committers)
+}
+
+#[cfg(test)]
+mod test {
+    use super::parse_mappings;
+
+    #[test]
+    fn mappings() {
+        let mappings = parse_mappings(
+            &b"\n Old <old@example.com>  =  New Name <new@example.com>\r\n\nSame <s@example.com> = Same <s@example.com>"[..],
+        )
+        .unwrap();
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(
+            mappings[&b"Old <old@example.com>"[..]],
+            b"New Name <new@example.com>"
+        );
+    }
+
+    #[test]
+    fn malformed_mappings() {
+        for line in [
+            "Old <old@example.com> New <new@example.com>",
+            "Old <old@example.com> = New",
+            "Old <old@example.com> = ",
+            "Old = New <new@example.com>",
+            "Old <old@example.com> = New <new@example.com> x",
+            "Old <old@example.com> = <new@example.com>",
+            "Old <old@example.com> = New<new@example.com>",
+        ] {
+            assert!(parse_mappings(line.as_bytes()).is_err(), "{line}");
+        }
+    }
 }

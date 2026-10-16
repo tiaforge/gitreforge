@@ -89,7 +89,12 @@ fn main() {
                 .unwrap();
             }
             ContributorArgs::Rewrite => {
-                contributors::rewrite(repository_path, cli.dry_run, &signing_policy).unwrap();
+                if let Err(error) =
+                    contributors::rewrite(repository_path, cli.dry_run, &signing_policy)
+                {
+                    eprintln!("error: {error}");
+                    std::process::exit(2);
+                }
             }
         },
         Commands::Remove {
