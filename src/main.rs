@@ -44,11 +44,11 @@ enum Commands {
                         .required(true)
                         .multiple(true)))]
     Remove {
-        /// File to remove. The char '*' can be used as a wildcard at the beginning or end. Path can be absolute or relative, depending on if a '/' is present. Argument can be specified multiple times
+        /// File to remove. The char '*' can be used as a wildcard at the beginning or end. A path starting with '/' is absolute, any other path matches at any depth. Argument can be specified multiple times
         #[arg(short, long, group = "input")]
         file: Option<Vec<String>>,
 
-        /// Directory to remove. The char '*' can be used as a wildcard at the begining or end. Path can be absolute or relative, depending on if it starts with a '/'. Argument can be specified multiple times
+        /// Directory to remove. The char '*' can be used as a wildcard at the beginning or end. A path starting with '/' is absolute, any other path matches at any depth. Argument can be specified multiple times
         #[arg(short, long, group = "input")]
         directory: Option<Vec<String>>,
 

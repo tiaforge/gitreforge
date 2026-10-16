@@ -7,8 +7,6 @@ use std::{
     sync::{RwLock, mpsc::channel},
 };
 
-use bstr::ByteSlice;
-
 use gitreforgelib::{
     Repository, WriteObject,
     objs::{CommitBase, CommitEditable, CommitHash, Tree, TreeEdit, TreeHash},
@@ -50,10 +48,25 @@ fn build_folder_delete_patterns(folders: &[String]) -> DynFn<'_> {
                 delete_folder = b!(move |path| delete_folder(path)
                     || path[0..path.len() - 1].ends_with(&folder[1..]));
             }
-        } else if folder[folder.len() - 1] == b'*' {
+        } else if folder[0] == b'/' && folder[folder.len() - 1] == b'*' {
             delete_folder =
                 b!(move |path| delete_folder(path)
                     || path.starts_with(&folder[0..folder.len() - 1]));
+        } else if folder[folder.len() - 1] == b'*' {
+            // relative path with wildcard: the last components of the path
+            // start with the pattern, "build*" matches "/src/build-x/"
+            let mut pattern = b"/".to_vec();
+            pattern.extend_from_slice(&folder[0..folder.len() - 1]);
+            let components = pattern.iter().filter(|c| **c == b'/').count();
+            delete_folder = b!(move |path| delete_folder(path) || {
+                let path = &path[..path.len() - 1];
+                path.iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, c)| **c == b'/')
+                    .nth(components - 1)
+                    .is_some_and(|(start, _)| path[start..].starts_with(&pattern))
+            });
         } else if folder[0] == b'/' {
             // absolute path, no wildcard
             if folder[folder.len() - 1] == b'/' {
@@ -109,35 +122,33 @@ fn build_file_delete_patterns(files: &[String]) -> DynFn2<'_> {
                         || filename.ends_with(&file[1..]));
                 }
             }
-        } else if file[file.len() - 1] == b'*' {
-            match last_index_of(file, b'/') {
-                // /some/folder/file_to_delete*
-                Some(last_slash) => {
-                    delete_file = b!(move |path, filename| delete_file(path, filename)
-                        || (path.eq(&file[0..last_slash + 1])
-                            && filename.starts_with(&file[last_slash + 1..file.len() - 1])));
-                }
-                // file_to_delete*
-                None => {
-                    delete_file = b!(move |path, filename| delete_file(path, filename)
-                        || filename.starts_with(&file[0..file.len() - 1]));
-                }
-            }
-        } else if file[0] == b'/' {
-            // absolute path: /some/folder/file_to_delete.txt
-            let last_slash = last_index_of(file, b'/').unwrap();
-            delete_file = b!(move |path, filename| delete_file(path, filename)
-                || (path.len() + filename.len() == file.len()
-                    && path.eq(&file[0..last_slash + 1])
-                    && filename.eq(&file[last_slash + 1..])));
         } else {
-            // simple file name, should not contain any slashes: file_to_delete.txt
-            if last_index_of(file, b'/').is_some() {
-                panic!("Unknown pattern: {}", file.as_bstr());
-            }
+            // "[/][some/folder/]name[*]": an absolute folder must be the
+            // file's folder, a relative one must be at the end of it
+            let (folder, name) = match last_index_of(file, b'/') {
+                Some(last_slash) => (&file[..last_slash + 1], &file[last_slash + 1..]),
+                None => (&b""[..], file),
+            };
+            let folder = if folder.is_empty() || folder[0] == b'/' {
+                folder.to_vec()
+            } else {
+                [b"/", folder].concat()
+            };
+            let absolute = file[0] == b'/';
+            let folder_matches = move |path: &[u8]| {
+                if absolute {
+                    path == folder
+                } else {
+                    path.ends_with(&folder)
+                }
+            };
 
-            delete_file =
-                b!(move |path, filename| delete_file(path, filename) || filename.eq(file));
+            delete_file = match name.strip_suffix(b"*") {
+                Some(prefix) => b!(move |path, filename| delete_file(path, filename)
+                    || (filename.starts_with(prefix) && folder_matches(path))),
+                None => b!(move |path, filename| delete_file(path, filename)
+                    || (filename == name && folder_matches(path))),
+            };
         }
     }
 
@@ -204,7 +215,7 @@ fn patterns_depend_on_path(files: &[String], directories: &[String], regexes: &[
 
     let file_depends = |file: &String| file.contains('/');
     let directory_depends = |folder: &String| {
-        if folder.ends_with('*') && !folder.starts_with('*') || folder.starts_with('/') {
+        if folder.starts_with('/') {
             return true;
         }
         let name = folder.trim_start_matches('*').trim_end_matches('/');
@@ -536,13 +547,13 @@ mod test {
         for files in [&["*.zip"][..], &["secret*"], &["passwords.txt"]] {
             assert!(!patterns_depend_on_path(&strings(files), &none, &none), "{files:?}");
         }
-        for directories in [&["docs"][..], &["*build"], &["*build/"], &["bin/"]] {
+        for directories in [&["docs"][..], &["*build"], &["*build/"], &["bin/"], &["build*"]] {
             assert!(!patterns_depend_on_path(&none, &strings(directories), &none), "{directories:?}");
         }
         for files in [&["/Makefile"][..], &["*bin/test.txt"], &["/a/b*"]] {
             assert!(patterns_depend_on_path(&strings(files), &none, &none), "{files:?}");
         }
-        for directories in [&["/docs"][..], &["bin/debug"], &["*my/directory"], &["/x/y*"]] {
+        for directories in [&["/docs"][..], &["bin/debug"], &["*my/directory"], &["/x/y*"], &["a/b*"]] {
             assert!(patterns_depend_on_path(&none, &strings(directories), &none), "{directories:?}");
         }
         assert!(patterns_depend_on_path(&none, &none, &strings(&["x"])));
@@ -591,6 +602,8 @@ mod test {
             "/x/y*".into(),
             "bin/debug".into(),
             "foo/bar/".into(),
+            "build*".into(),
+            "out/gen*".into(),
         ];
 
         let matches = build_folder_delete_patterns(&patterns);
@@ -613,6 +626,15 @@ mod test {
         assert!(!matches(b"/a/some/folder/"));
         assert!(!matches(b"/this/is_some_folder/b/"));
         assert!(!matches(b"/my/directory/b/"));
+
+        assert!(matches(b"/build/"));
+        assert!(matches(b"/src/build-x/"));
+        assert!(!matches(b"/src/rebuild/"));
+        assert!(!matches(b"/build-x/sub/"));
+        assert!(matches(b"/out/generated/"));
+        assert!(matches(b"/a/out/gen/"));
+        assert!(!matches(b"/a/xout/gen/"));
+        assert!(!matches(b"/out/x/gen/"));
     }
 
     #[test]
@@ -624,6 +646,8 @@ mod test {
             "*test1.txt".into(),
             "/var/opt/myfile*".into(),
             "thisfile*".into(),
+            "bin/relative.txt".into(),
+            "etc/relative*".into(),
         ];
         let should_delete = super::build_file_delete_patterns(&patterns);
 
@@ -659,6 +683,16 @@ mod test {
         assert!(!should_delete(b"/", b"_thisfile"));
         assert!(!should_delete(b"/", b"test.txt1"));
         assert!(!should_delete(b"/hello/world", b"1test.txt"));
+
+        assert!(should_delete(b"/bin/", b"relative.txt"));
+        assert!(should_delete(b"/a/bin/", b"relative.txt"));
+        assert!(!should_delete(b"/a/xbin/", b"relative.txt"));
+        assert!(!should_delete(b"/bin/a/", b"relative.txt"));
+        assert!(!should_delete(b"/", b"relative.txt"));
+        assert!(should_delete(b"/etc/", b"relative.conf"));
+        assert!(should_delete(b"/x/etc/", b"relative"));
+        assert!(!should_delete(b"/x/etc/", b"_relative"));
+        assert!(!should_delete(b"/x/etcetera/", b"relative"));
     }
 }
 

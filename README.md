@@ -117,6 +117,11 @@ Remove a specific file everywhere it appears:
 gitreforge /path/to/project.git remove --file secrets.env
 ```
 
+Paths that start with `/` are absolute and only match at that location.
+Other paths match at any depth: `config/secrets.env` removes
+`config/secrets.env` and `app/config/secrets.env`, but not
+`myconfig/secrets.env`.
+
 Remove a directory:
 
 ```sh
