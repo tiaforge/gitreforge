@@ -190,6 +190,11 @@ impl CommitEditable {
         self.parents[index] = Some(value);
     }
 
+    /// Replaces all parents, also when their number changes
+    pub fn set_parents(&mut self, parents: Vec<CommitHash>) {
+        self.parents = parents.into_iter().map(Some).collect();
+    }
+
     // pub fn author(&self) -> &bstr::BStr {
     //     self.author.get(&self.bytes).as_bstr()
     // }

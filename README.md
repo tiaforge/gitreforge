@@ -142,7 +142,9 @@ non-merge commits with:
 gitreforge /path/to/project.git prune-empty
 ```
 
-Merge commits are preserved.
+Merge commits are preserved, unless pruning leaves them with only a single
+parent: a merge of a branch that only had empty commits is pruned like any
+other empty commit.
 
 ## Commit Signing
 

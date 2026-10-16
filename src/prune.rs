@@ -1,7 +1,5 @@
 use std::{
-    collections::HashMap,
     error::Error,
-    hash::BuildHasher,
     path::PathBuf,
     sync::mpsc::{Sender, channel},
     thread,
@@ -16,28 +14,6 @@ use gitreforgelib::{
 
 use crate::signing::SigningPolicy;
 
-fn get_parent_if_empty_commit<T: BuildHasher>(
-    commit: &CommitEditable,
-    rewritten_commits: &HashMap<CommitHash, CommitHash, T>,
-    commit_trees: &HashMap<CommitHash, TreeHash, T>,
-) -> Option<CommitHash> {
-    let parents = commit.parents();
-    if parents.len() == 1 {
-        let commit_tree = commit.tree();
-        let parent = parents.first().unwrap();
-        let parent = rewritten_commits.get(parent).unwrap_or(parent).clone();
-
-        let parent_tree = &commit_trees[&parent];
-        if parent_tree == &commit_tree {
-            Some(parent)
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
 fn find_empty_commits(
     repository: &mut Repository,
     tx: Sender<WriteObject>,
@@ -47,25 +23,32 @@ fn find_empty_commits(
     let mut commit_trees: FxHashMap<CommitHash, TreeHash> = FxHashMap::default();
 
     for mut commit in repository.commits_topo_prefetched().map(CommitEditable::create) {
-        if let Some(parent) = get_parent_if_empty_commit(&commit, &rewritten_commits, &commit_trees)
-        {
-            rewritten_commits.insert(commit.base_hash().clone(), parent);
+        let base_hash = commit.base_hash().clone();
+        let original_parents = commit.parents();
+
+        // parents that were pruned can collapse into the same commit
+        let mut parents: Vec<CommitHash> = Vec::with_capacity(original_parents.len());
+        for parent in &original_parents {
+            let parent = rewritten_commits.get(parent).unwrap_or(parent);
+            if !parents.contains(parent) {
+                parents.push(parent.clone());
+            }
+        }
+
+        let commit_tree = commit.tree();
+        if parents.len() == 1 && commit_trees[&parents[0]] == commit_tree {
+            rewritten_commits.insert(base_hash, parents.pop().unwrap());
             continue;
         }
 
-        let base_hash = commit.base_hash().clone();
-        commit
-            .parents()
-            .iter()
-            .map(|parent| rewritten_commits.get(parent).unwrap_or(parent).clone())
-            .enumerate()
-            .for_each(|(i, parent)| commit.set_parent(i, parent));
+        if parents != original_parents {
+            commit.set_parents(parents);
+        }
 
         signing_policy
             .sign_if_selected(&mut commit)
             .expect("failed to sign commit");
 
-        let commit_tree = commit.tree();
         let w: WriteObject = commit.into();
 
         let new_hash: CommitHash = w.hash.clone().into();
