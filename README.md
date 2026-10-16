@@ -129,10 +129,12 @@ gitreforge /path/to/project.git remove --directory vendor/private
 ```
 
 Use a regular expression when the simpler file or directory matchers are not
-enough:
+enough. It is matched against the full path of each file, which starts with a
+`/` (`/src/debug-1.log`):
 
 ```sh
 gitreforge /path/to/project.git remove --regex '(^|/)debug-[^/]+\.log$'
+gitreforge /path/to/project.git remove --regex '^/logs/.*\.log$'
 ```
 
 You can pass each matcher more than once, and you can combine matcher types in
@@ -223,8 +225,8 @@ Commands:
   as a wildcard at the beginning or end.
 - `remove --directory <DIRECTORY>`: remove matching directories from history.
   `*` can be used as a wildcard at the beginning or end.
-- `remove --regex <REGEX>`: remove paths whose full repository path matches the
-  regular expression.
+- `remove --regex <REGEX>`: remove files whose full repository path, starting
+  with `/`, matches the regular expression.
 - `prune-empty`: remove empty non-merge commits.
 
 ## Safety Notes

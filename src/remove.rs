@@ -98,7 +98,7 @@ fn build_regex_pattern(patterns: &[String]) -> DynFn2<'_> {
         return b!(|_, _| false);
     }
 
-    let regexes = RegexSet::new(patterns).unwrap();
+    let regexes = RegexSet::new(patterns).expect("regexes are validated");
     b!(move |folder, file| {
         let path = [folder, file].concat();
         regexes.is_match(&path)
@@ -398,7 +398,12 @@ pub fn remove(
     regexes: Vec<String>,
     dry_run: bool,
     signing_policy: &SigningPolicy,
-) {
+) -> Result<(), String> {
+    if files.iter().chain(&directories).any(|p| p.is_empty()) {
+        return Err("--file and --directory patterns must not be empty".into());
+    }
+    RegexSet::new(&regexes).map_err(|e| format!("invalid --regex: {e}"))?;
+
     let mut rewritten_commits: HashMap<CommitHash, CommitHash, _> = FxHashMap::default();
     let rewritten_trees =
         RewrittenTrees::new(patterns_depend_on_path(&files, &directories, &regexes));
@@ -502,6 +507,7 @@ pub fn remove(
     if std::env::var_os("GITREFORGE_TIMINGS").is_some() {
         eprintln!("TIMING rewrite={:.3} refs+finish={:.3} mapfile={:.3}", (t1 - t0).as_secs_f64(), (t2 - t1).as_secs_f64(), (t3 - t2).as_secs_f64());
     }
+    Ok(())
 }
 
 fn update_commit(

@@ -52,7 +52,7 @@ enum Commands {
         #[arg(short, long, group = "input")]
         directory: Option<Vec<String>>,
 
-        /// Regex to remove files. Matches on the whole path including the filename, which makes it a little more expensive than the file or directory options. Argument can be specified multiple times
+        /// Regex to remove files. Matches on the whole path including the filename, with a leading '/' (e.g. "/src/main.rs"), which makes it a little more expensive than the file or directory options. Argument can be specified multiple times
         #[arg(short, long, group = "input")]
         regex: Option<Vec<String>>,
     },
@@ -97,14 +97,17 @@ fn main() {
             directory,
             regex,
         } => {
-            remove::remove(
+            if let Err(error) = remove::remove(
                 repository_path,
                 file.unwrap_or_default(),
                 directory.unwrap_or_default(),
                 regex.unwrap_or_default(),
                 cli.dry_run,
                 &signing_policy,
-            );
+            ) {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
         }
 
         Commands::PruneEmpty => {
