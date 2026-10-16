@@ -33,4 +33,4 @@ jobs:
           ls -la "$CARGO_TARGET_DIR" 2>/dev/null || true
 
       - name: Test
-        run: cargo test --release --locked
+        run: cargo test --release --locked --workspace
