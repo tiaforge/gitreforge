@@ -215,6 +215,9 @@ gitreforge [OPTIONS] [REPOSITORY] <COMMAND>
 `REPOSITORY` is the path to a bare or mirrored repository. If omitted, `gitreforge`
 uses the current directory.
 
+Every rewrite writes the old and new id of each changed commit to
+`object-id-map.old-new.txt` in the current directory.
+
 Global options:
 
 - `-d`, `--dry-run`: do not change the repository.
