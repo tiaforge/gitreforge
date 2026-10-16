@@ -225,6 +225,11 @@ fn patterns_depend_on_path(files: &[String], directories: &[String], regexes: &[
     files.iter().any(file_depends) || directories.iter().any(directory_depends)
 }
 
+const EMPTY_TREE: [u8; 20] = [
+    0x4b, 0x82, 0x5d, 0xc6, 0x42, 0xcb, 0x6e, 0xb9, 0xa0, 0x60, 0xe5, 0x4b, 0xf8, 0xd6, 0x92, 0x88,
+    0xfb, 0xee, 0x49, 0x04,
+];
+
 type RewrittenEntries = SmallVec<[(Box<[u8]>, Option<TreeHash>); 1]>;
 
 /// Old tree hash to its rewritten hash (None: unchanged), sharded by the
@@ -331,8 +336,13 @@ fn update_tree(
                 );
                 path.truncate(path_len);
                 if let Some(new_tree_hash) = new_tree_hash {
-                    edit.get_or_insert_with(|| TreeEdit::new(&tree))
-                        .replace_hash(index, &new_tree_hash);
+                    let edit = edit.get_or_insert_with(|| TreeEdit::new(&tree));
+                    // like git, don't keep directories without files
+                    if new_tree_hash.as_bytes() == &EMPTY_TREE {
+                        edit.remove(index);
+                    } else {
+                        edit.replace_hash(index, &new_tree_hash);
+                    }
                 }
             }
         } else if should_delete_file(path, line.filename()) || should_remove(path, line.filename())

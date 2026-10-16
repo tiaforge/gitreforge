@@ -136,7 +136,7 @@ gitreforge /path/to/project.git remove --regex '(^|/)debug-[^/]+\.log$'
 ```
 
 You can pass each matcher more than once, and you can combine matcher types in
-one command.
+one command. Directories that are left without any files are removed as well.
 
 ## Pruning Empty Commits
 
