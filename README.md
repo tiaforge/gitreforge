@@ -187,7 +187,8 @@ Supported signing configuration:
   an inline `ssh-...` public key, or a `key::ssh-...` value.
 - If `user.signingkey` is a public key or omitted, signing uses the first
   suitable key from `SSH_AUTH_SOCK`.
-- Private key files are read and used directly.
+- Private key files are read and used directly. Encrypted private keys must be
+  added to the SSH agent instead.
 
 Current limitations:
 

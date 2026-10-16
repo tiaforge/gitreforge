@@ -58,9 +58,10 @@ impl SigningPolicy {
     }
 }
 
-struct SshSigner {
-    key: Option<PublicKey>,
-    private_key_path: Option<PathBuf>,
+enum SshSigner {
+    PrivateKey(PrivateKey),
+    /// Key blob of the agent identity to sign with
+    Agent { socket: String, identity: Vec<u8> },
 }
 
 impl SshSigner {
@@ -82,50 +83,67 @@ impl SshSigner {
         }
 
         let Some(signing_key) = config.get("user.signingkey") else {
-            return Ok(Self {
-                key: None,
-                private_key_path: None,
-            });
+            return Self::agent(None);
         };
 
-        if signing_key.starts_with("key::") {
-            return Ok(Self {
-                key: Some(PublicKey::from_openssh(&signing_key[5..])?),
-                private_key_path: None,
-            });
+        if let Some(key) = signing_key.strip_prefix("key::") {
+            return Self::agent(Some(&PublicKey::from_openssh(key)?));
         }
 
         if signing_key.starts_with("ssh-") {
-            return Ok(Self {
-                key: Some(PublicKey::from_openssh(signing_key)?),
-                private_key_path: None,
-            });
+            return Self::agent(Some(&PublicKey::from_openssh(signing_key)?));
         }
 
         let path = expand_path(signing_key);
-        let contents = fs::read_to_string(&path)?;
+        let contents = fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read user.signingkey {}: {e}", path.display()))?;
         if contents
             .trim_start()
             .starts_with("-----BEGIN OPENSSH PRIVATE KEY-----")
         {
-            return Ok(Self {
-                key: None,
-                private_key_path: Some(path),
-            });
+            let key = PrivateKey::from_openssh(&contents)?;
+            if key.is_encrypted() {
+                return Err(format!(
+                    "{} is encrypted; add it to an SSH agent and set user.signingkey to its public key",
+                    path.display()
+                )
+                .into());
+            }
+            return Ok(Self::PrivateKey(key));
         }
 
-        Ok(Self {
-            key: Some(PublicKey::from_openssh(contents.trim())?),
-            private_key_path: None,
+        Self::agent(Some(&PublicKey::from_openssh(contents.trim())?))
+    }
+
+    /// Picks the configured key, or the first one, from the agent.
+    fn agent(configured_key: Option<&PublicKey>) -> Result<Self> {
+        let socket = std::env::var("SSH_AUTH_SOCK")
+            .map_err(|_| "SSH_AUTH_SOCK is not set; cannot use SSH agent for signing")?;
+        let mut stream = connect_agent(&socket)?;
+        let identities = request_identities(&mut stream)?;
+        let identity = if let Some(configured_key) = configured_key {
+            let configured_key_bytes = configured_key.to_bytes()?;
+            identities
+                .into_iter()
+                .find(|identity| identity.blob == configured_key_bytes)
+                .ok_or("configured SSH signing key is not available from SSH_AUTH_SOCK agent")?
+        } else {
+            identities
+                .into_iter()
+                .next()
+                .ok_or("SSH_AUTH_SOCK agent has no signing identities")?
+        };
+
+        Ok(Self::Agent {
+            socket,
+            identity: identity.blob,
         })
     }
 
     fn sign(&self, payload: &[u8]) -> Result<Vec<u8>> {
-        let signature = if let Some(private_key_path) = &self.private_key_path {
-            let private_key = PrivateKey::read_openssh_file(private_key_path)?;
-            private_key.sign(SSHSIG_NAMESPACE, HashAlg::default(), payload)?
-        } else {
-            sign_with_agent(self.key.as_ref(), payload)?
+        let signature = match self {
+            Self::PrivateKey(key) => key.sign(SSHSIG_NAMESPACE, HashAlg::default(), payload)?,
+            Self::Agent { socket, identity } => sign_with_agent(socket, identity, payload)?,
         };
 
         Ok(signature.to_pem(LineEnding::LF)?.into_bytes())
@@ -213,27 +231,11 @@ fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn sign_with_agent(configured_key: Option<&PublicKey>, payload: &[u8]) -> Result<SshSig> {
-    let socket = std::env::var("SSH_AUTH_SOCK")
-        .map_err(|_| "SSH_AUTH_SOCK is not set; cannot use SSH agent for signing")?;
-    let mut stream = connect_agent(&socket)?;
-    let identities = request_identities(&mut stream)?;
-    let identity = if let Some(configured_key) = configured_key {
-        let configured_key_bytes = configured_key.to_bytes()?;
-        identities
-            .into_iter()
-            .find(|identity| identity.blob == configured_key_bytes)
-            .ok_or("configured SSH signing key is not available from SSH_AUTH_SOCK agent")?
-    } else {
-        identities
-            .into_iter()
-            .next()
-            .ok_or("SSH_AUTH_SOCK agent has no signing identities")?
-    };
-
+fn sign_with_agent(socket: &str, identity: &[u8], payload: &[u8]) -> Result<SshSig> {
+    let mut stream = connect_agent(socket)?;
     let signed_data = SshSig::signed_data(SSHSIG_NAMESPACE, HashAlg::default(), payload)?;
-    let signature = agent_sign(&mut stream, &identity.blob, &signed_data)?;
-    let public_key = PublicKey::from_bytes(&identity.blob)?;
+    let signature = agent_sign(&mut stream, identity, &signed_data)?;
+    let public_key = PublicKey::from_bytes(identity)?;
     Ok(SshSig::new(
         public_key.key_data().clone(),
         SSHSIG_NAMESPACE,
@@ -243,12 +245,12 @@ fn sign_with_agent(configured_key: Option<&PublicKey>, payload: &[u8]) -> Result
 }
 
 #[cfg(unix)]
-fn connect_agent(socket: &str) -> Result<impl Read + Write> {
+fn connect_agent(socket: &str) -> Result<impl Read + Write + use<>> {
     Ok(std::os::unix::net::UnixStream::connect(socket)?)
 }
 
 #[cfg(not(unix))]
-fn connect_agent(_socket: &str) -> Result<impl Read + Write> {
+fn connect_agent(_socket: &str) -> Result<impl Read + Write + use<>> {
     Err("SSH agent signing is currently implemented for Unix sockets only".into())
 }
 

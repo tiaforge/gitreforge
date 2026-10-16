@@ -75,8 +75,11 @@ enum ContributorArgs {
 fn main() {
     let cli = Cli::parse();
     let repository_path = PathBuf::from(cli.repository.unwrap_or(String::from(".")));
-    let signing_policy =
-        signing::SigningPolicy::create(&repository_path, cli.sign_committer).unwrap();
+    let signing_policy = signing::SigningPolicy::create(&repository_path, cli.sign_committer)
+        .unwrap_or_else(|error| {
+            eprintln!("error: cannot sign commits: {error}");
+            std::process::exit(2);
+        });
 
     match cli.command {
         Commands::Contributor(args) => match args {
