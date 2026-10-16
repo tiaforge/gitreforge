@@ -174,7 +174,8 @@ gitreforge --sign-committer alice@example.com --sign-committer bob@example.com /
 ```
 
 Signing is applied by committer email, not author email. Commits with other
-committer emails are rewritten without a new signature.
+committer emails are rewritten without a new signature. Commits that the
+rewrite doesn't change keep their id and their existing signature.
 
 Supported signing configuration:
 

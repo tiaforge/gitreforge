@@ -34,7 +34,12 @@ impl SigningPolicy {
         Ok(Self { committers, signer })
     }
 
+    /// Signs the commit if the rewrite changed it and its committer is
+    /// selected. Unchanged commits keep their id and existing signature.
     pub fn sign_if_selected(&self, commit: &mut CommitEditable) -> Result<()> {
+        if self.committers.is_empty() || !commit.has_changes() {
+            return Ok(());
+        }
         let Some(email) = commit.committer_email() else {
             return Ok(());
         };
