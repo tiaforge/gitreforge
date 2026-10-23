@@ -38,4 +38,4 @@ ssh-key = { version = "0.6.7", features = ["crypto"] }
 # features include the precomputed tables for Ed25519
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "zeroize"] }
 rsa = { version = "0.9.10", default-features = false, features = ["sha2", "u64_digit"] }
-sha2 = { version = "0.10.9", default-features = false }
+sha2 = { version = "0.11.0", default-features = false }
